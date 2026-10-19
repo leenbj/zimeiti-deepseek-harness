@@ -1,0 +1,284 @@
+# 头条号 b-1 发布图文 recipe
+# 派生来源（只读引用）：
+#   ~/.dsh/skills/media-publish-skill/scripts/publish_toutiao_v2.py  L36-L282
+#     （drawer_open / close_ai_drawer / fill_article / open_gallery / search_gallery /
+#       pick_random_image / confirm_insert / set_cover_single / do_publish / launch args）
+#   ~/.dsh/skills/media-publish-skill/NOTES-toutiao.md               L1-L49
+#   ~/.dsh/skills/media-publish-skill/SKILL.md                       L141-L150
+#   ~/.dsh/skills/media-publish-skill/回查结果-20260908.md           L11-L20（headless 静默拦截）
+# 派生日期：2026-10-13
+# 凡标注「待实机验证」的步骤都没有实机跑过。
+recipe_version: 1
+id: toutiao__publish-article
+media: toutiao
+label: 头条号发布图文
+account_codes: [b-1]
+capabilities:
+  editor: prosemirror
+  cover: true                # 必选三选一（单图/三图/无封面）
+  free_gallery: true
+  headless: false            # 关键：headless 发布会静默拦截（回查结果-20260908.md:11-20、脚本 L231-232）
+session_check:
+  url: https://mp.toutiao.com/profile_v4/index
+  fail_if_url_contains: [sso.toutiao.com, passport, /login]
+  fail_if_text_contains: [扫码登录, 登录后继续, 请先登录]
+params:
+  - {name: title, type: string, required: true, max_len: 30}
+  - {name: body, type: text, required: true, min_len: 1}
+  - name: gallery_keyword
+    type: string
+    required: false
+    default: 互联网
+    description: >
+      图库单关键词。NOTES-toutiao.md:23-24 实测组合词「域名 互联网」返回 0 张、单关键词「互联网」返回 30 张；
+      脚本会逐 token 降级重试，recipe 是线性步骤无法分支，因此默认用实测有效的单关键词。
+steps:
+  # --- 1. 打开图文编辑器 + 关 AI 助手抽屉（publish_toutiao_v2.py:61-75, 45-58）---
+  - type: goto
+    url: https://mp.toutiao.com/profile_v4/graphic/publish
+    waitUntil: domcontentloaded
+    timeoutMs: 45000
+    note: publish_toutiao_v2.py:29 PUBLISH_URL
+  - type: waitFor
+    for: {selector: "textarea[placeholder*='文章标题']"}
+    timeoutMs: 45000
+    note: 脚本用固定 wait_for_timeout(5000)；这里改为等标题框出现
+  - type: eval
+    expression: |
+      (() => {
+        const d = document.querySelector('.ai-assistant-drawer');
+        if (!d || !d.offsetParent) return {action: 'absent'};
+        const b = d.querySelector('svg.close-btn');
+        if (b) b.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+        return {action: b ? 'dispatched' : 'no-close-btn'};
+      })()
+    purpose: >
+      复刻 publish_toutiao_v2.py:45-58 close_ai_drawer —— AI 抽屉会挡住工具栏点击，
+      必须派发原生 MouseEvent 到 .ai-assistant-drawer svg.close-btn（SPEC 无「原生事件点击」步骤）
+    optional: true
+    timeoutMs: 10000
+  - type: eval
+    expression: |
+      (() => {
+        const d = document.querySelector('.ai-assistant-drawer');
+        if (d && d.offsetParent) throw new Error('AI 助手抽屉未关闭，可能挡住工具栏');
+        return true;
+      })()
+    purpose: 复刻 close_ai_drawer 的「确认关闭」判定；关不掉只告警不中断（脚本 L58 同样只打日志）
+    optional: true
+    retry: {times: 3, delayMs: 1200}
+    timeoutMs: 15000
+  # --- 2. 填标题 + 正文（publish_toutiao_v2.py:61-75）---
+  - type: type
+    target: {selector: "textarea[placeholder*='文章标题']"}
+    text: "{{title}}"
+    mode: fill
+    clear: true
+    timeoutMs: 15000
+    note: NOTES-toutiao.md:12 标题是 textarea（限 30 字），脚本用 get_by_placeholder('请输入文章标题')
+  - type: type
+    target: {selector: ".ProseMirror[contenteditable=true]"}
+    text: "{{body}}"
+    mode: type
+    timeoutMs: 60000
+    note: >
+      publish_toutiao_v2.py:67-74：JS focus .ProseMirror 后逐段 keyboard.type + Enter 分段。
+      {{body}} 以 \n 分段，需要 actions.execute 在 mode=type 时把 \n 译成 Enter。
+      待实机验证：\n 分段行为与 focus 方式。
+  # --- 3. 打开免费图库抽屉（publish_toutiao_v2.py:78-103）---
+  - type: click
+    target: {selector: "button.syl-toolbar-button", nth: 11}
+    optional: true
+    retry: {times: 1, delayMs: 1500}
+    timeoutMs: 15000
+    note: >
+      脚本 L86-95 取**可见** button.syl-toolbar-button 的第 11 个（index 11）并点其矩形中心。
+      nth: 11 是 Playwright 真实鼠标点击（会自动滚进视口），但 Playwright 的 nth 计的是全部匹配元素、
+      而脚本过滤了 offsetParent（可见）——两者在存在隐藏按钮时会错位。
+      待实机验证：nth 是否需要改成 eval 探测的可见序号（下一步就是该兜底）。
+  - type: eval
+    expression: |
+      (() => {
+        const panel = document.querySelector('.upload-image-panel');
+        const drawer = panel && panel.closest('.byte-drawer-wrapper');
+        if (drawer && drawer.offsetWidth > 0) return {action: 'already-open'};
+        const btns = [...document.querySelectorAll('button.syl-toolbar-button')].filter(b => b.offsetParent);
+        if (btns.length <= 11) throw new Error('可见工具栏按钮只有 ' + btns.length + ' 个，取不到 index 11');
+        btns[11].dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+        return {action: 'dispatched', visibleButtons: btns.length};
+      })()
+    purpose: >
+      幂等兜底：抽屉已开则什么都不做；否则按脚本唯一的元素定位法（可见序号 11）派发原生点击。
+      脚本的真实鼠标坐标点击在 SPEC 里没有对应步骤类型，只能退化为原生事件，故此处是 escape hatch。
+    optional: true
+    retry: {times: 2, delayMs: 2000}
+    timeoutMs: 15000
+  - type: eval
+    expression: |
+      (() => {
+        const panel = document.querySelector('.upload-image-panel');
+        const drawer = panel && panel.closest('.byte-drawer-wrapper');
+        if (!drawer || !(drawer.offsetWidth > 0)) throw new Error('图库抽屉未打开');
+        return true;
+      })()
+    purpose: >
+      复刻 publish_toutiao_v2.py:36-42 drawer_open()（.upload-image-panel 且 .byte-drawer-wrapper 宽度>0）。
+      SPEC 的 waitFor 只能等 selector 出现，判不了 offsetWidth，故用 eval 断言 + retry 当轮询。
+    retry: {times: 4, delayMs: 2000}
+    timeoutMs: 25000
+  # --- 4. 切「免费正版图片」tab 并搜索（publish_toutiao_v2.py:113-144）---
+  - type: dispatch
+    target: {text: 免费正版图片, exact: true}
+    event: click
+    retry: {times: 2, delayMs: 1500}
+    timeoutMs: 15000
+    note: >
+      publish_toutiao_v2.py:116-120：在 .byte-tabs-header-title 中按 trim 文本匹配并派发原生 MouseEvent。
+      这里按文本定位（不并用 selector，避免 selector 先命中 3 个 tab 导致点错）。
+  - type: type
+    target: {selector: ".byte-tabs-content-item.active input[placeholder*='关键词']"}
+    text: "{{gallery_keyword}}"
+    mode: fill
+    clear: true
+    timeoutMs: 15000
+    note: >
+      publish_toutiao_v2.py:123-133 用原生 value setter + new Event('input',{bubbles:true})，
+      Playwright 的 fill 内部就是原生 setter + input 事件，语义等价。
+      selector 里带上 .active 是因为三个 pane 各有一个搜索框（脚本也是先取 active pane 再取其 input）。
+  - type: press
+    key: Enter
+    times: 1
+    timeoutMs: 10000
+    note: publish_toutiao_v2.py:134 触发检索
+  - type: waitFor
+    for: {selector: ".byte-tabs-content-item.active li.item"}
+    timeoutMs: 25000
+    note: >
+      脚本 L135-140 等 5s 后数 li.item，为 0 则换下一个关键词；recipe 无法分支，
+      命中 0 张时这里会超时失败并留下截图，需人工换 gallery_keyword。
+  # --- 5. 选图 + 确定插入（publish_toutiao_v2.py:147-187）---
+  - type: click
+    target: {selector: ".byte-tabs-content-item.active li.item", nth: 0}
+    optional: true
+    retry: {times: 1, delayMs: 1500}
+    timeoutMs: 15000
+    note: >
+      脚本 L147-177 在「视口内且 x>=280」的卡片里**随机**选一张并点中心（点视口外点不中）。
+      Playwright 定位点击会自动把目标滚进视口，因此这里用确定性的 nth: 0；
+      随机性不适合回放（结果不可复现），这是有意的偏离。待实机验证：li.item 点 nth:0 是否稳定选中。
+  - type: eval
+    expression: |
+      (() => {
+        const pane = [...document.querySelectorAll('.byte-tabs-content-item')].find(p => p.className.includes('active'));
+        if (!pane) throw new Error('找不到 active 图库 pane');
+        const items = [...pane.querySelectorAll('li.item')];
+        if (items.some(li => li.querySelector('.pop-number'))) return {action: 'already-picked'};
+        const vis = items.filter(li => {
+          const r = li.getBoundingClientRect();
+          return r.width > 50 && r.y >= 0 && r.y + r.height < 800 && r.x >= 280;
+        });
+        if (!vis.length) throw new Error('视口内没有可点卡片');
+        vis[0].dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+        return {action: 'dispatched', viewportCards: vis.length};
+      })()
+    purpose: >
+      幂等兜底：已选中则不动；否则按脚本 L157-160 的视口过滤规则（y 在视口内、x>=280）
+      对第一张合格卡片派发原生点击。真实鼠标坐标点击在 SPEC 里没有对应步骤类型。
+    optional: true
+    retry: {times: 3, delayMs: 1200}
+    timeoutMs: 20000
+  - type: eval
+    expression: |
+      (() => {
+        const pane = [...document.querySelectorAll('.byte-tabs-content-item')].find(p => p.className.includes('active'));
+        if (!pane) throw new Error('找不到 active 图库 pane');
+        const picked = [...pane.querySelectorAll('li.item')].filter(li => li.querySelector('.pop-number'));
+        if (!picked.length) throw new Error('没有卡片进入选中态（.pop-number 未出现）');
+        return {picked: picked.length};
+      })()
+    purpose: 复刻 publish_toutiao_v2.py:167-171 的选中校验（.pop-number 徽标）
+    retry: {times: 3, delayMs: 1200}
+    timeoutMs: 20000
+  - type: click
+    target: {role: button, text: 确定, exact: true}
+    timeoutMs: 15000
+    note: publish_toutiao_v2.py:181 get_by_role("button", name="确定", exact=True)
+  - type: eval
+    expression: |
+      (() => {
+        if (document.querySelector('.upload-image-panel'))
+          throw new Error('插入后图库抽屉未关闭');
+        return true;
+      })()
+    purpose: 复刻 publish_toutiao_v2.py:184-186「插入后抽屉必须消失」
+    retry: {times: 3, delayMs: 1500}
+    timeoutMs: 20000
+  # --- 6. 封面单图（publish_toutiao_v2.py:190-206）---
+  - type: eval
+    expression: |
+      (() => {
+        const radios = [...document.querySelectorAll('.article-cover .byte-radio')];
+        const target = radios.find(r => (r.textContent || '').trim() === '单图');
+        if (!target) return {action: 'not-found'};
+        target.scrollIntoView({block: 'center'});
+        const input = target.querySelector('input');
+        if (input && !input.checked) input.click();
+        return {action: 'ok', checked: !!(input && input.checked)};
+      })()
+    purpose: >
+      复刻 publish_toutiao_v2.py:190-206 set_cover_single（byte-radio 的文字匹配 + input.click()）。
+      脚本此处失败只打日志不抛错，故本步 optional。
+    optional: true
+    retry: {times: 2, delayMs: 1000}
+    timeoutMs: 15000
+  - type: eval
+    expression: |
+      (() => {
+        const radios = [...document.querySelectorAll('.article-cover .byte-radio')];
+        const t = radios.find(r => (r.textContent || '').trim() === '单图');
+        return {checked: !!(t && t.querySelector('input') && t.querySelector('input').checked)};
+      })()
+    purpose: 封面选中态证据（脚本 L201-206 只 log，不阻断）
+    optional: true
+    timeoutMs: 10000
+  # --- 7. 预览并发布 → 确认发布（publish_toutiao_v2.py:209-221）---
+  - type: click
+    target: {role: button, text: 预览并发布}
+    timeoutMs: 15000
+    note: publish_toutiao_v2.py:210 get_by_role("button", name="预览并发布")
+  - type: waitFor
+    for: {selector: "button:has-text('确认发布'), [role=button]:has-text('确认发布')"}
+    timeoutMs: 30000
+    note: 脚本 L211-212 等 4s 后点「确认发布」；这里等二次确认弹窗出现（待实机验证该选择器形态）
+  - type: click
+    target: {role: button, text: 确认发布}
+    submit: true
+    timeoutMs: 20000
+    note: publish_toutiao_v2.py:212 —— 真正提交的按钮；dryRun 会跳过本步
+  - type: waitFor
+    for: {urlContains: graphic/articles}
+    timeoutMs: 60000
+    note: NOTES-toutiao.md:37 发布后跳转 /profile_v4/graphic/articles；脚本 L213 等 6s 后读 URL
+  - type: eval
+    expression: |
+      (() => {
+        const els = [...document.querySelectorAll('*')]
+          .filter(e => e.children.length === 0 && /审核中|发布成功|失败/.test(e.textContent || ''));
+        return els.length ? (els[0].textContent || '').trim() : '';
+      })()
+    purpose: 复刻 publish_toutiao_v2.py:215-219 的 toast 抓取，仅作为 run.json 证据
+    timeoutMs: 15000
+  - type: extract
+    spec:
+      - {name: submitUrl, from: {url: true}}
+    note: 脚本 L265 丢弃了发布后 URL；正式链接要过审后在列表页回查（verify.mode=later_backfill）
+verify:
+  mode: later_backfill
+  list_url: https://mp.toutiao.com/profile_v4/graphic/articles
+  title_match: exact_normalized
+  status_regex: "已发布|审核中|审核未通过"
+  accept_link_contains: ["www.toutiao.com/item/", "www.toutiao.com/article/"]
+  final_url_template: null
+  wait_ms: 7000
+  # NOTES-toutiao.md:39-44：列表行内标题 <a> 的 href 才是正式链；审核期间状态=审核中、链接可能未生效
+overrides: {}

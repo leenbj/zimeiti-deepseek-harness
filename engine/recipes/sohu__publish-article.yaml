@@ -1,0 +1,150 @@
+# 搜狐号 a-1 发布图文 recipe
+# 派生来源（只读引用）：
+#   ~/.dsh/skills/media-publish-skill/scripts/publish_sohu.py  L34-L122（open_editor / fill_article /
+#                                                              set_declaration / do_publish / launch）
+#   ~/.dsh/skills/media-publish-skill/NOTES-sohu.md            L1-L63（DOM 事实与踩坑）
+#   ~/.dsh/skills/media-publish-skill/SKILL.md                 L141-L150（平台踩坑实录）
+# 派生日期：2026-10-13
+# 凡标注「待实机验证」的步骤都没有实机跑过，见 compile-report / 交付报告。
+recipe_version: 1
+id: sohu__publish-article
+media: sohu
+label: 搜狐号发布图文
+account_codes: [a-1]
+capabilities:
+  editor: quill
+  cover: false
+  free_gallery: false        # NOTES-sohu.md:47「无免费图库」，与 SPEC §3 示例的 true 相悖，以实测为准
+  daily_limit: 5             # NOTES-sohu.md:22 配额提示「您今天还能发 5 篇文章」
+  headless: true             # publish_sohu.py:141 headless=True，无额外反检测参数
+session_check:
+  url: https://mp.sohu.com/mpfe/v4/contentManagement/first/page
+  # settleMs：搜狐（以及头条、CSDN）的登录跳转是**客户端**发生的，domcontentloaded 之后才 push。
+  # 立刻取样会读到跳转前的瞬时状态，守卫会漏判——实测三个平台全部漏判过。
+  settleMs: 9000
+  fail_if_url_contains: [mpfe/v4/login, passport, sso]
+  # 未登录时 first/page 会渲染**搜狐号公开首页**（实测截图：顶栏右上「登录」、右侧黄色
+  # 「登录/注册」按钮、正文是各家自媒体文章流），页面里并没有「请登录/登录后继续/扫码登录」，
+  # 所以原来那三个标记一个都不命中，守卫形同虚设。下面两个是照该截图补的、可区分的标记。
+  fail_if_text_contains: [请登录, 登录后继续, 扫码登录, 登录/注册, 立即登录]
+  # 刻意不用 fail_if_selector：首页常驻腾讯验证码 iframe（NOTES-sohu.md:11，通常自动通过）
+  # 兜底：即便标记仍漏判，recipe 第一步 waitFor button.mt-button.publish-btn 也会在未登录页失败，
+  # 因此不会有内容被敲进登录页；但那样拿到的是 TARGET/TIMEOUT 而不是可执行的 LOGIN_REQUIRED。
+params:
+  - {name: title, type: string, required: true, max_len: 72}
+  - {name: body, type: text, required: true, min_len: 1}
+  - name: declaration
+    type: enum
+    required: false
+    values: [无需声明, 含有虚构演绎内容, 含有AI生成内容, 含有营销信息, 内容为转载, 内容为个人观点]
+    default: 无需声明
+steps:
+  # --- 1. 进后台首页 → 点「发布内容」进编辑页（publish_sohu.py:34-52）---
+  - type: goto
+    url: https://mp.sohu.com/mpfe/v4/contentManagement/first/page
+    waitUntil: domcontentloaded
+    timeoutMs: 45000
+    note: publish_sohu.py:27,35 —— 后台首页是 first/page，不是 /index（NOTES-sohu.md:8）
+  - type: waitFor
+    for: {selector: "button.mt-button.publish-btn"}
+    timeoutMs: 45000
+    note: 脚本用固定 wait_for_timeout(6000)，这里改为等按钮出现
+  - type: click
+    target: {selector: "button.mt-button.publish-btn"}
+    timeoutMs: 15000
+    note: 待实机验证 —— 脚本用 JS btn.click()（publish_sohu.py:38-41），这里用真实点击
+  - type: waitFor
+    for: {urlContains: addarticle}
+    timeoutMs: 30000
+    note: publish_sohu.py:43-44 断言进入编辑页，否则抛「未进入编辑页」
+  - type: click
+    target: {text: 我知道了, exact: true}
+    optional: true
+    timeoutMs: 8000
+    note: 关「文章排版新升级」提示条（publish_sohu.py:46-50）；关不掉不影响发布
+  # --- 2. 填标题 + 正文（publish_sohu.py:55-70）---
+  - type: type
+    target: {selector: 'input[placeholder="请输入标题（5-72字）"]'}
+    text: "{{title}}"
+    mode: fill
+    clear: true
+    timeoutMs: 15000
+    note: publish_sohu.py:56 get_by_placeholder(...).fill(title)
+  - type: type
+    target: {selector: ".ql-editor[contenteditable=true]"}
+    text: "{{body}}"
+    mode: type
+    timeoutMs: 60000
+    note: >
+      publish_sohu.py:58-64：JS focus .ql-editor 后逐段 keyboard.type + Enter 分段。
+      {{body}} 以 \n 分段，需要 actions.execute 在 mode=type 时把 \n 译成 Enter（与脚本等价）。
+      待实机验证：\n 分段行为与 focus 方式。
+  # --- 3. 创作声明（必选；publish_sohu.py:73-104）---
+  - type: waitFor
+    for: {selector: ".statement-panel"}
+    timeoutMs: 15000
+    note: publish_sohu.py:76-80 先把 .statement-panel 滚进视口
+  - type: dispatch
+    target: {selector: 'label.el-radio:has-text("{{declaration}}") input.el-radio__original'}
+    event: click
+    timeoutMs: 10000
+    note: >
+      NOTES-sohu.md:28-29：必须对 input.el-radio__original 派发原生事件序列
+      mousedown→mouseup→click→change（直接 input.click()/label.click() 无效，Vue 绑定要原生事件流）。
+      engine/actions.py:_act_dispatch 对 event=click 展开的正是这 4 个事件（脚本 publish_sohu.py:89-91 同序），
+      因此一个 dispatch 步骤即可，不需要拆成 4 步。
+      待实机验证：`label.el-radio:has-text(...)` 依赖 actions 用 Playwright Locator 解析 selector。
+  - type: eval
+    expression: |
+      (() => {
+        const label = [...document.querySelectorAll('label.el-radio')]
+          .find(l => (l.textContent || '').trim() === '{{declaration}}');
+        const input = label && label.querySelector('input.el-radio__original');
+        if (!label || !input || !(input.checked || label.className.includes('is-checked')))
+          throw new Error('创作声明「{{declaration}}」未选中');
+        return true;
+      })()
+    purpose: 复刻 publish_sohu.py:97-101 的选中校验（SPEC 没有 assert 步骤类型，用 eval 逃生舱做断言）
+    retry: {times: 2, delayMs: 800}
+    timeoutMs: 15000
+    note: 不选声明点发布会 toast「请添加必选声明」并失败（NOTES-sohu.md:25），故这里必须硬校验
+  # --- 4. 提交（publish_sohu.py:107-122）---
+  - type: click
+    target: {selector: "li.publish-report-btn.active"}
+    submit: true
+    timeoutMs: 15000
+    note: publish_sohu.py:108-111 JS click；底部固定栏是 li 不是 button（NOTES-sohu.md:19-21）
+  - type: waitFor
+    for: {urlContains: first/page}
+    timeoutMs: 60000
+    note: >
+      成功判据＝跳回 first/page。脚本写的是 pathname 含 first/page **或** contentManagement
+      （publish_sohu.py:115），但编辑页 URL 也含 contentManagement，该判断无效；这里收紧为 first/page。
+  - type: eval
+    expression: |
+      (() => {
+        const t = [...document.querySelectorAll('*')]
+          .filter(e => e.children.length === 0 && e.offsetParent &&
+                       /审核中|发布成功|失败|必填|请添加/.test(e.textContent || ''))
+          .map(e => (e.textContent || '').trim())
+          .find(x => x.length < 20) || '';
+        return t;
+      })()
+    purpose: 复刻 publish_sohu.py:114-119 的 toast 抓取，仅作为 run.json 证据（不做成败判定）
+    timeoutMs: 15000
+  - type: extract
+    spec:
+      - {name: submitUrl, from: {url: true}}
+    note: 只作证据，不当作正式链接；正式链接要过审后在列表页回查（verify.mode=later_backfill）
+verify:
+  mode: later_backfill
+  list_url: https://mp.sohu.com/mpfe/v4/contentManagement/first/page
+  title_match: exact_normalized
+  row_guard: title_prefix_12
+  status_regex: "已发布|审核中|审核未通过"
+  accept_link_contains: ["www.sohu.com/a/"]
+  reject_link_contains: ["articlepreview"]
+  final_url_template: null
+  wait_ms: 7000
+  # NOTES-sohu.md:38,41-43：审核中只有 articlepreview 预览链；正式链是 www.sohu.com/a/<id>_<accountId>（审核后才渲染）
+overrides: {}

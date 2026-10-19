@@ -1,0 +1,41 @@
+{
+  "name": "@dsh-plugin/media-publish",
+  "version": "0.4.7",
+  "private": true,
+  "description": "Agent-driven browser publishing for self-media accounts: record a publish flow into a replayable recipe, and isolate accounts with their own proxy IP",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "engine",
+    "!engine/__pycache__",
+    "!engine/**/__pycache__",
+    "cordis.patch.yml",
+    "docs",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  },
+  "comment": "No runtime dependencies on purpose. The plugin is installed as a pnpm `link:` dependency, and pnpm does not install a linked package's own dependencies, so any bare import of a DSH package would fail to resolve from the profile. The two helpers that would otherwise come from @deepseek-ai/dsh-tools / @deepseek-ai/schemastery are reimplemented against the frozen registry contract in src/tool-kit.js. See docs/SPEC.md 搂5. The browser half under lib/ is hand-written in the shipped bundle shape, so it needs no build step; its only module requests are `react` and `react/jsx-runtime`, both of which the shell seeds in its frozen PLATFORM_MODULES table, so `dsh.client.external` is empty by design.",
+  "dependencies": {},
+  "peerDependencies": {}
+}

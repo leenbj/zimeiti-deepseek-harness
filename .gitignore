@@ -1,0 +1,35 @@
+# 打包产物（pnpm pack 生成，可随时重建；且 tarball 被 profile 清单引用，不应进仓库）
+dist/
+
+# 依赖与构建缓存
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+
+# 运行时数据（账号登录态、代理密码、回放产物 —— 绝不入库）
+data/
+accounts/
+secrets.yaml
+proxies.yaml
+proxy_state/
+runs/
+traces/
+logs/
+*.jsonl
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 临时与备份
+*.bak
+*.tmp
+*.log

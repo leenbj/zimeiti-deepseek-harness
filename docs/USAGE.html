@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自媒体发布插件 · 使用手册</title>
+<style>
+/* ---------------------------------------------------------------------------
+   配色与排版说明（请勿当成 DSH 的真实色值）
+   本页的 CSS 变量名沿用 DSH 的令牌语义（--dsw-alias-* 等），因为插件的设置页
+   就是用这些令牌写的。但 DSH 的令牌**只导出名字与用途，不导出具体色值**
+   （我从 @deepseek-ai/dsh-client-ui-theme 里只找到 name/cssVariable 声明），
+   所以这里的色值是"按语义对应"的一套中性配色，而不是从运行时读取的真值。
+   排版尺度则是对齐过的：正文 14px/22px、控件 36/28/32px、圆角 8/6px、
+   边框 0.5px —— 与 Button/Input/Checkbox 三个原语的 CSS 模块一致。
+--------------------------------------------------------------------------- */
+:root{
+  --dsw-alias-bg-base:#f6f7f8; --dsw-alias-bg-layer-1:#ffffff; --dsw-alias-bg-layer-2:#eff1f3;
+  --dsw-alias-label-primary:#1b1c1e; --dsw-alias-label-secondary:#585c63; --dsw-alias-label-tertiary:#8a8f97;
+  --dsw-alias-label-dimmed:#a9aeb6;
+  --dsw-alias-border-l1:rgba(0,0,0,.08); --dsw-alias-border-l2:rgba(0,0,0,.13); --dsw-alias-border-l4:rgba(0,0,0,.16);
+  --dsw-alias-brand-primary:#4d6bfe; --dsw-alias-brand-soft:rgba(77,107,254,.10);
+  --dsw-alias-state-error-primary:#c0392b; --dsw-alias-state-success-primary:#1f8a4c; --dsw-alias-state-warn-primary:#a86a12;
+  --dsw-radius-lg:12px; --dsw-radius-md:8px; --dsw-radius-sm:6px;
+  --dsw-shadow:0 1px 2px rgba(16,18,22,.05),0 8px 24px rgba(16,18,22,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --dsw-alias-bg-base:#141517; --dsw-alias-bg-layer-1:#1d1e21; --dsw-alias-bg-layer-2:#26282c;
+    --dsw-alias-label-primary:#eceef1; --dsw-alias-label-secondary:#a7acb4; --dsw-alias-label-tertiary:#7d828a;
+    --dsw-alias-label-dimmed:#666b73;
+    --dsw-alias-border-l1:rgba(255,255,255,.09); --dsw-alias-border-l2:rgba(255,255,255,.15); --dsw-alias-border-l4:rgba(255,255,255,.18);
+    --dsw-alias-brand-primary:#7f95ff; --dsw-alias-brand-soft:rgba(127,149,255,.14);
+    --dsw-alias-state-error-primary:#f0776a; --dsw-alias-state-success-primary:#4bc07f; --dsw-alias-state-warn-primary:#e0a94a;
+    --dsw-shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary);
+  font:14px/22px -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--dsw-alias-brand-primary); text-decoration:none}
+a:hover{text-decoration:underline}
+code,kbd,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+
+/* layout */
+.wrap{display:flex; align-items:flex-start; max-width:1180px; margin:0 auto; gap:28px; padding:28px 20px 80px}
+nav{
+  position:sticky; top:28px; flex:0 0 208px; padding:14px; background:var(--dsw-alias-bg-layer-1);
+  border:0.5px solid var(--dsw-alias-border-l1); border-radius:var(--dsw-radius-lg); box-shadow:var(--dsw-shadow);
+}
+nav .navtitle{font-size:11px; letter-spacing:.04em; text-transform:uppercase; color:var(--dsw-alias-label-tertiary); margin:2px 6px 8px}
+nav a{display:block; padding:5px 8px; border-radius:var(--dsw-radius-sm); color:var(--dsw-alias-label-secondary); font-size:13px}
+nav a:hover{background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); text-decoration:none}
+nav a.on{background:var(--dsw-alias-brand-soft); color:var(--dsw-alias-brand-primary); font-weight:500}
+main{flex:1 1 auto; min-width:0}
+
+/* header */
+header{margin-bottom:22px}
+h1{font-size:23px; line-height:32px; margin:0 0 8px; font-weight:600; letter-spacing:-.01em}
+.sub{color:var(--dsw-alias-label-secondary); margin:0}
+.badges{display:flex; gap:6px; flex-wrap:wrap; margin-top:12px}
+.tag{display:inline-flex; align-items:center; height:20px; padding:0 8px; border-radius:999px;
+  font-size:11px; line-height:20px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-secondary)}
+.tag.brand{background:var(--dsw-alias-brand-soft); color:var(--dsw-alias-brand-primary)}
+
+/* sections */
+section{margin:0 0 30px; scroll-margin-top:20px}
+h2{font-size:17px; line-height:26px; margin:0 0 12px; font-weight:600; padding-bottom:8px;
+  border-bottom:0.5px solid var(--dsw-alias-border-l1)}
+h3{font-size:14px; line-height:22px; margin:20px 0 8px; font-weight:600}
+p{margin:0 0 10px}
+ul,ol{margin:0 0 10px; padding-left:22px}
+li{margin:3px 0}
+.card{background:var(--dsw-alias-bg-layer-1); border:0.5px solid var(--dsw-alias-border-l1);
+  border-radius:var(--dsw-radius-lg); padding:16px; box-shadow:var(--dsw-shadow)}
+
+/* tables */
+table{width:100%; border-collapse:collapse; margin:10px 0 14px; background:var(--dsw-alias-bg-layer-1);
+  border:0.5px solid var(--dsw-alias-border-l1); border-radius:var(--dsw-radius-lg); overflow:hidden}
+th,td{text-align:left; padding:9px 12px; border-top:0.5px solid var(--dsw-alias-border-l1); vertical-align:top}
+thead th{border-top:none; background:var(--dsw-alias-bg-layer-2); font-size:12px; color:var(--dsw-alias-label-secondary); font-weight:500}
+td code{font-size:12.5px}
+tbody tr:hover{background:var(--dsw-alias-bg-layer-2)}
+
+/* code */
+pre{background:var(--dsw-alias-bg-layer-2); border:0.5px solid var(--dsw-alias-border-l1);
+  border-radius:var(--dsw-radius-md); padding:12px 14px; overflow:auto; font-size:12.5px; line-height:20px; margin:10px 0}
+p code,li code,td code{background:var(--dsw-alias-bg-layer-2); padding:1px 5px; border-radius:4px}
+
+/* callouts */
+.note{display:flex; gap:10px; padding:11px 14px; border-radius:var(--dsw-radius-md); margin:12px 0;
+  border:0.5px solid var(--dsw-alias-border-l1); border-left-width:3px; background:var(--dsw-alias-bg-layer-1)}
+.note .ico{flex:0 0 auto; font-weight:600; font-size:12px; padding-top:1px}
+.note.info{border-left-color:var(--dsw-alias-brand-primary)}
+.note.warn{border-left-color:var(--dsw-alias-state-warn-primary)}
+.note.danger{border-left-color:var(--dsw-alias-state-error-primary)}
+.note.ok{border-left-color:var(--dsw-alias-state-success-primary)}
+.note b{font-weight:600}
+
+/* steps */
+ol.steps{counter-reset:s; list-style:none; padding:0; margin:12px 0}
+ol.steps>li{counter-increment:s; position:relative; padding:0 0 0 38px; margin:0 0 14px}
+ol.steps>li::before{content:counter(s); position:absolute; left:0; top:0; width:26px; height:26px;
+  border-radius:999px; background:var(--dsw-alias-brand-soft); color:var(--dsw-alias-brand-primary);
+  font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center}
+.kbd{display:inline-block; padding:1px 6px; border:0.5px solid var(--dsw-alias-border-l2);
+  border-bottom-width:1.5px; border-radius:5px; font-size:12px; background:var(--dsw-alias-bg-layer-1)}
+.muted{color:var(--dsw-alias-label-tertiary)}
+footer{color:var(--dsw-alias-label-tertiary); font-size:12px; border-top:0.5px solid var(--dsw-alias-border-l1); padding-top:14px}
+@media (max-width:900px){
+  .wrap{flex-direction:column; padding:18px 14px 60px}
+  nav{position:static; flex:1 1 auto; width:100%}
+  nav .navlinks{display:flex; flex-wrap:wrap; gap:4px}
+  nav a{padding:4px 9px; border:0.5px solid var(--dsw-alias-border-l1)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <div class="navtitle">目录</div>
+    <div class="navlinks">
+      <a href="#s0">0 · 先决条件</a>
+      <a href="#s1">1 · 三条使用路径</a>
+      <a href="#s2">2 · GUI 配置</a>
+      <a href="#s3">3 · 对话使用</a>
+      <a href="#s4">4 · 录制与回放</a>
+      <a href="#s5">5 · 数据在哪</a>
+      <a href="#s6">6 · 排错</a>
+      <a href="#s7">7 · 当前边界</a>
+      <a href="#s8">8 · 最短上手</a>
+    </div>
+  </nav>
+
+  <main>
+    <header>
+      <h1>自媒体发布插件 · 使用手册</h1>
+      <p class="sub">用 agent 控制浏览器，把「搜狐号 / 头条号 / CSDN」的发布流程录制成可复用脚本；账号环境相互隔离，并按账号绑定各自的代理 IP。</p>
+      <div class="badges">
+        <span class="tag brand">已安装 0.4.7</span>
+        <span class="tag">10 个工具</span>
+        <span class="tag">9 条配置接口</span>
+        <span class="tag">638 项断言通过</span>
+      </div>
+    </header>
+
+    <section id="s0">
+      <h2>0 · 先决条件：让插件真正加载起来</h2>
+      <div class="note warn"><span class="ico">!</span><div>
+        <b>插件只在 DSH 启动时导入一次。</b>改完文件、装完新版本，都必须<b>重启 DeepSeek Harness</b> 才会生效 ——
+        这一点我实测过五种进程内办法（切换 bundle、改 HMR 监视根、换真实副本、卸载重装、行级开关），<b>全部无效</b>。
+      </div></div>
+      <ol class="steps">
+        <li>安装或升级插件后，<b>重启 DSH</b>。</li>
+        <li>重启后确认版本：让我执行 <code>media_config {op:"get"}</code>，返回值里带 <code>pluginVersion</code>；或看设置页的插件卡片。</li>
+        <li>若报出的是更旧的版本（例如 <code>0.3.4</code>），说明<b>还没重启到新版</b>，账号管理相关界面不会出现。</li>
+      </ol>
+    </section>
+
+    <section id="s1">
+      <h2>1 · 三条使用路径</h2>
+      <table>
+        <thead><tr><th>你想做的事</th><th>走哪条路</th></tr></thead>
+        <tbody>
+          <tr><td>改配置、管账号、登录</td><td><b>GUI</b>：设置 → 自媒体发布（或 设置 → Plugins → 自媒体发布）</td></tr>
+          <tr><td>让我（agent）直接发布</td><td><b>对话</b>：我用 <code>media_*</code> 工具完成</td></tr>
+          <tr><td>把一个发布流程变成可复用脚本</td><td><b>录制 → 编译 → 回放</b>；第一次需要你配合，之后一句话就能发</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s2">
+      <h2>2 · GUI：设置 → 自媒体发布</h2>
+      <p>页面有两个分区。<b>发布环境</b>是后端参数，<b>发布账号</b>是账号与登录管理。</p>
+
+      <h3>2.1 发布环境</h3>
+      <p>每项都显示<b>当前值来自哪一层</b>；被页面覆盖过的项会多出一个「恢复默认」按钮。</p>
+      <table>
+        <thead><tr><th>字段</th><th>作用</th><th>生效时机</th></tr></thead>
+        <tbody>
+          <tr><td><code>pythonPath</code></td><td>跑 Playwright 的解释器路径。留空＝自动探测 DSH 自带运行时 → PATH</td><td>重启引擎</td></tr>
+          <tr><td><code>dataDir</code></td><td>账号、登录态、recipe、回放的根目录。必须是绝对路径</td><td>重启引擎</td></tr>
+          <tr><td><code>headless</code></td><td>会话/回放<b>默认</b>是否无头。头条号会静默拦截无头发布，所以默认关</td><td>下次调用</td></tr>
+          <tr><td><code>requireExplicitPublish</code></td><td>真发时是否额外给「REAL PUBLISH」告警。<b>真正的闸门是 <code>dryRun</code> 默认为 true</b>，与本项无关</td><td>下次调用</td></tr>
+          <tr><td><code>requestTimeoutMs</code></td><td>单次引擎请求超时（1000–3600000）</td><td>重启引擎</td></tr>
+        </tbody>
+      </table>
+      <div class="note info"><span class="ico">i</span><div>
+        优先级：<b>内置默认 ← 环境变量 ← 插件配置 <code>cordis.patch.yml</code> ← 你在页面保存的值</b>（页面最高）。
+        值存在 <code>~/.dsh/media-publish/config.json</code>。
+      </div></div>
+
+      <h3>2.2 发布账号</h3>
+      <p>每个账号一行：<code>代号 · 平台 · 登录名 · 登录状态 · 登录信息 · 代理</code>。</p>
+      <table>
+        <thead><tr><th>按钮</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><b>登录</b></td><td>打开一个<b>有头浏览器窗口</b>，请你在窗口里扫码。发起后请求<b>立即返回</b>，页面每 5 秒轮询，完成后自动变为「已登录」</td></tr>
+          <tr><td><b>检查</b></td><td>校验已保存的登录是否仍有效。这是<b>只读校验、不回写</b>登录态，所以不会弄坏一个好登录</td></tr>
+          <tr><td><b>编辑</b></td><td>把该账号填进下方表单（代号/平台/登录名/备注），改完「保存账号」</td></tr>
+          <tr><td><b>代理</b></td><td>展开代理表单：填 <code>代理服务器 / 用户名 / 密码</code> → <b>绑定</b>；或<b>解绑</b>；或<b>测试</b>（显示出口 IP 与耗时）</td></tr>
+          <tr><td><b>删除</b></td><td>删除账号，<b>保留</b>已保存的登录态</td></tr>
+          <tr><td><b>删除并退出登录</b></td><td>删除账号，<b>并</b>删除登录态（会二次确认）</td></tr>
+        </tbody>
+      </table>
+      <p>下方表单可<b>新增账号</b>：代号（1–32 位字母数字与 <code>.</code> <code>_</code> <code>-</code>，首字符须为字母或数字）、平台、登录名、备注。</p>
+
+      <h3>登录信息如何保留，以及账号之间如何隔离</h3>
+      <ul>
+        <li>登录信息保存在<b>每个账号自己的文件</b>里：<code>&lt;dataDir&gt;/accounts/&lt;代号&gt;/storage_state.json</code>（cookies + localStorage）。
+          页面上的「登录信息已保存：12.3KB」就是<b>直接读该文件</b>得到的字节数，不是估计值。</li>
+        <li>除登录态外，每个账号还有<b>独立的浏览器上下文</b>、<b>独立指纹</b>（由代号确定性派生：UA / 平台 / 视口 / 时区 / DPR / GPU，同账号永远一致、不同账号必然不同）、<b>独立的代理绑定</b>。</li>
+        <li>因此 <b>a-1 的登录态对 b-1 不可见</b>；<code>b-1</code> 目录下不会出现 <code>a-1</code> 的文件。这一条有回归测试锁定：两个账号的状态文件路径必须不同。</li>
+        <li><b>代理密码只进不出</b>：绑定时代码把密码交给引擎，引擎写进 <code>secrets.yaml</code>；之后所有接口只回 <code>hasPassword: true/false</code>，永不回显。有测试用真实密码串 grep 整个响应来锁死这一点。</li>
+      </ul>
+    </section>
+
+    <section id="s3">
+      <h2>3 · 对话：让我直接干活</h2>
+      <p>你只需说人话，我来选工具。以下是常用对照：</p>
+      <table>
+        <thead><tr><th>你说</th><th>我调用</th></tr></thead>
+        <tbody>
+          <tr><td>看看插件状态</td><td><code>media_status</code>（加 <code>probe:true</code> 会真启动引擎验证 Playwright）</td></tr>
+          <tr><td>列出账号</td><td><code>media_account {op:"list"}</code></td></tr>
+          <tr><td>给 a-1 登录</td><td><code>media_account {op:"login", code:"a-1"}</code>（弹窗等你扫码，最长等 10 分钟）</td></tr>
+          <tr><td>检查登录还有效吗</td><td><code>media_account {op:"check", code:"a-1"}</code></td></tr>
+          <tr><td>给 b-1 绑代理</td><td><code>media_account {op:"bindProxy", code:"b-1", proxy:{…}}</code></td></tr>
+          <tr><td>读 / 改配置</td><td><code>media_config {op:"get" | "set" | "reset"}</code></td></tr>
+          <tr><td>用搜狐号发这篇（先空跑）</td><td><code>media_publish {op:"run", recipeId, accountCode, params:{title, body}}</code></td></tr>
+        </tbody>
+      </table>
+      <div class="note ok"><span class="ico">✓</span><div>
+        <b>安全默认：<code>dryRun</code> 默认为 true。</b>空跑会打开页面、填表、截图，但<b>跳过提交</b>。
+        真正发布必须显式传 <code>dryRun:false</code>。这条有测试用<b>真实提交次数</b>锁定（不传 dryRun → 提交 0 次）。
+      </div></div>
+    </section>
+
+    <section id="s4">
+      <h2>4 · 录制 → 编译 → 回放（核心价值）</h2>
+
+      <h3>4.1 第一次：录一段真实流程</h3>
+      <ol class="steps">
+        <li>我打开会话：<code>media_session {op:"open", accountCode:"a-1"}</code></li>
+        <li>开始录制：<code>media_record {op:"start", sessionId, media:"sohu", recipeId:"sohu__my-flow"}</code></li>
+        <li>我逐步操作（<code>media_observe</code> 看页面元素与截图 → <code>media_act</code> 点击/输入/选择/上传…），你在窗口里只处理扫码或验证码</li>
+        <li>保存：<code>media_record {op:"save", sessionId, label:"搜狐号发布图文"}</code> —— 会把标题、正文等<b>字面量自动参数化成 <code>{{title}}</code> / <code>{{body}}</code></b>，并产出一份 compile-report 告诉你哪些字面量变成了参数、哪一步被当作提交步骤</li>
+      </ol>
+      <div class="note warn"><span class="ico">!</span><div>
+        三份<b>内置 recipe</b> 已随插件提供（搜狐 14 步 / 头条 26 步 / CSDN 17 步），它们的<b>登录守卫已对三个真实平台确证</b>
+        —— 未登录时会在敲任何内容<b>之前</b>以 <code>LOGIN_REQUIRED</code> 快速失败。但<b>正文 / 标签 / 封面等内容步骤尚未对真机确证</b>，
+        这正是需要你登录后录一次来校准的部分。
+      </div></div>
+
+      <h3>4.2 之后：一句话回放</h3>
+<pre>media_publish {op:"run", recipeId:"sohu__my-flow", accountCode:"a-1",
+               params:{title:"标题", body:"正文"}, dryRun:true}    ← 先空跑，看截图
+
+media_publish {op:"run", recipeId:"sohu__my-flow", accountCode:"a-1",
+               params:{title:"标题", body:"正文"}, dryRun:false}   ← 确认后真发
+
+media_publish {op:"backfill", accountCode:"a-1", title:"标题"}      ← 平台审核完后取正式链接</pre>
+      <p>回放会<b>自愈</b>：某一步定位器失效，先重新快照并寻找候选；只有唯一高置信才改写，有歧义就报错并把候选交给你。
+        每次运行都会在 <code>&lt;dataDir&gt;/runs/&lt;时间&gt;-&lt;recipe&gt;-&lt;账号&gt;/</code> 留下 <code>run.json</code> 与逐步截图。</p>
+    </section>
+
+    <section id="s5">
+      <h2>5 · 数据在哪</h2>
+      <table>
+        <thead><tr><th>路径</th><th>内容</th></tr></thead>
+        <tbody>
+          <tr><td><code>accounts/&lt;代号&gt;/storage_state.json</code></td><td>该账号的登录信息（隔离的关键）</td></tr>
+          <tr><td><code>accounts.yaml</code></td><td>账号登记表</td></tr>
+          <tr><td><code>proxies.yaml</code></td><td>静态代理列表与<b>提取器</b>配置</td></tr>
+          <tr><td><code>secrets.yaml</code></td><td>代理密码（<b>从不回显</b>）</td></tr>
+          <tr><td><code>recipes/&lt;平台&gt;/&lt;id&gt;.yaml</code></td><td>你录制的 recipe（<b>优先于</b>内置同名 recipe）</td></tr>
+          <tr><td><code>runs/…</code></td><td>每次回放的 run.json 与截图</td></tr>
+          <tr><td><code>config.json</code></td><td>页面上保存的五个参数</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">默认根目录：<code>%USERPROFILE%\.dsh\media-publish</code></p>
+    </section>
+
+    <section id="s6">
+      <h2>6 · 出问题看这里</h2>
+      <table>
+        <thead><tr><th>现象</th><th>原因与处理</th></tr></thead>
+        <tbody>
+          <tr><td>设置里没有「自媒体发布」</td><td>还没重启 DSH，或 live 版本低于 0.3.5</td></tr>
+          <tr><td>页面提示「本部署的 web 服务上没有注册插件的配置路由」</td><td>旧版本的路由注册缺陷（≤ 0.3.3）。升级并重启</td></tr>
+          <tr><td>页面提示「插件拒绝了这些取值」</td><td>请求被拒。看括号里的 HTTP 码：<b>409</b> ＝ 有其他写入方改了配置，点「重新读取」再存</td></tr>
+          <tr><td><code>LOGIN_REQUIRED</code></td><td>该账号没有可用登录态 → 在页面上点「登录」扫码</td></tr>
+          <tr><td><code>PROXY_UNAVAILABLE</code></td><td>代理不可用。<b>这不是登录失效</b>，插件不会把它伪装成登录过期</td></tr>
+          <tr><td><code>NAVIGATION_FAILED</code></td><td>页面跳转失败或被中断。返回里带 <code>requestedUrl</code> / <code>finalUrl</code> / <code>reason</code></td></tr>
+          <tr><td><code>TARGET_NOT_FOUND</code></td><td>定位器失效。返回里带候选元素，可据此修 recipe 或重录该段</td></tr>
+          <tr><td>头条号发布失败</td><td>头条会拦截无头发布。确保 <code>headless=false</code>（本插件默认就是）</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s7">
+      <h2>7 · 当前边界（诚实清单）</h2>
+      <div class="note danger"><span class="ico">✕</span><div>
+        <b>内置 recipe 的内容步骤未对真机确证。</b>登录守卫已确证；正文 / 标签 / 封面需要你登录后各录一次来校准。
+      </div></div>
+      <div class="note danger"><span class="ico">✕</span><div>
+        <b>动态代理池的提取链接不能从页面配置。</b>引擎只暴露 <code>proxy.fetch / proxy.test / proxy.rotate</code>，
+        <b>没有</b>读写 <code>proxies.yaml</code> 提取器的接口。页面目前支持的是<b>每账号绑定固定代理</b>。
+        要接提取器需要给引擎加一个配置接口（可以加，需要你提供链接与返回格式）。
+      </div></div>
+      <div class="note warn"><span class="ico">!</span><div>
+        <b>登录必须人工扫码。</b>页面上的「登录」会打开窗口等你操作 —— 这是平台的验证机制，无法自动化绕过。
+      </div></div>
+      <div class="note warn"><span class="ico">!</span><div>
+        <b>改绑代理会改变出口 IP。</b>登录态仍在，但对绑定 IP 的平台可能触发二次验证。建议<b>先定代理再登录</b>。
+      </div></div>
+      <div class="note warn"><span class="ico">!</span><div>
+        若某平台把会话绑在 cookie / localStorage 之外（IndexedDB、Service Worker），<code>storage_state</code> 不覆盖这部分。
+        目前<b>未观察到</b>这类情况，但也<b>未对三平台长期登录寿命做过验证</b>。
+      </div></div>
+    </section>
+
+    <section id="s8">
+      <h2>8 · 最短上手路径</h2>
+      <ol class="steps">
+        <li><b>重启 DSH</b>，然后让我确认 <code>pluginVersion</code> 是 <code>0.4.7</code>。</li>
+        <li>进入 <b>设置 → 自媒体发布 → 发布账号</b>，点 <b>a-1 的「登录」</b>，扫码，等页面显示「已登录」。</li>
+        <li>告诉我一声，我会立刻验证三件事：<code>media_account {op:"check", code:"a-1"}</code> 是否有效；
+          <code>accounts/a-1/storage_state.json</code> 是否真的存在且含 cookies；<code>accounts/b-1/</code> 下是否<b>仍然为空</b>（隔离证据）。</li>
+        <li>然后我们<b>录一次真实的搜狐号发布</b>，把内置 recipe 的内容步骤校准到能用。</li>
+        <li>之后你只要说「用搜狐号发这篇：标题… 正文…」，我先空跑给你看截图，你确认后真发。</li>
+      </ol>
+    </section>
+
+    <footer>
+      本页由插件仓库的 <code>docs/USAGE.html</code> 提供，与 <code>docs/USAGE.md</code> 内容一致。<br>
+      配色说明：CSS 变量名沿用 DSH 的令牌语义，但 <b>DSH 令牌只导出名字与用途、不导出具体色值</b>（我从
+      <code>@deepseek-ai/dsh-client-ui-theme</code> 中只找到 <code>name</code>/<code>cssVariable</code> 声明），
+      因此这里的颜色是「按语义对应」的一套中性配色，而非运行时真值；排版尺度（正文 14px/22px、控件 36/28/32px、圆角 8/6px、边框 0.5px）是对齐原语 CSS 的。
+    </footer>
+  </main>
+</div>
+<script>
+// Highlight the section currently in view.
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav a[href^="#"]'));
+  var map = {};
+  links.forEach(function (a) {
+    var el = document.getElementById(a.getAttribute('href').slice(1));
+    if (el) map[el.id] = a;
+  });
+  if (!('IntersectionObserver' in window)) return;
+  var seen = {};
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      seen[entry.target.id] = entry.isIntersecting ? entry.intersectionRatio : 0;
+    });
+    var best = null;
+    Object.keys(seen).forEach(function (id) {
+      if (seen[id] > 0 && (!best || seen[id] > seen[best])) best = id;
+    });
+    links.forEach(function (a) { a.classList.remove('on'); });
+    if (best && map[best]) map[best].classList.add('on');
+  }, { rootMargin: '-10% 0px -70% 0px', threshold: [0, 0.2, 0.5, 1] });
+  Object.keys(map).forEach(function (id) { io.observe(document.getElementById(id)); });
+})();
+</script>
+</body>
+</html>

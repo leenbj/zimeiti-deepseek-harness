@@ -1,0 +1,179 @@
+# CSDN c-1 / c-2 发布博客 recipe
+# 派生来源（只读引用）：
+#   ~/.dsh/skills/media-publish-skill/scripts/publish_csdn.py  L43-L123
+#     （fill_article / set_tag / do_publish / launch）
+#   ~/.dsh/skills/media-publish-skill/scripts/collect_links.py L106-L133（CSDN 回查与 HTTP 200 校验）
+#   ~/.dsh/skills/media-publish-skill/NOTES-csdn.md            L1-L53
+#   ~/.dsh/skills/media-publish-skill/SKILL.md                 L141-L150
+# 派生日期：2026-10-13
+# 凡标注「待实机验证」的步骤都没有实机跑过。
+recipe_version: 1
+id: csdn__publish-article
+media: csdn
+label: CSDN 发布博客
+account_codes: [c-1, c-2]
+capabilities:
+  editor: ckeditor4
+  cover: false
+  free_gallery: false
+  headless: true             # publish_csdn.py:144 headless=True
+session_check:
+  url: https://mp.csdn.net/mp_blog/manage/article
+  fail_if_url_contains: [/login, passport.csdn.net]
+  fail_if_text_contains: [扫码登录, 登录后查看]
+  fail_if_selector: ['iframe[src*="passport.csdn.net"]']
+  # publish_csdn.py:46-47：编辑页出现 passport iframe 即登录态失效
+params:
+  - {name: title, type: string, required: true, min_len: 5, max_len: 100}
+  - {name: body, type: text, required: true, min_len: 1}
+  - name: tag
+    type: string
+    required: false
+    default: 域名与商标
+    description: >
+      文章标签（必填）。NOTES-csdn.md:20-22：search-recommend-tag 由 Vue watch 真实输入触发，
+      且实测搜「域名」无推荐结果；最稳做法是搜索框真实键入标签词后按 Enter 创建自定义标签。
+steps:
+  # --- 1. 打开编辑器（publish_csdn.py:43-57）---
+  - type: goto
+    url: https://mp.csdn.net/mp_blog/creation/editor
+    waitUntil: domcontentloaded
+    timeoutMs: 60000
+    note: publish_csdn.py:30 EDITOR_URL；脚本用固定 wait_for_timeout(8000)
+  - type: waitFor
+    for: {selector: "textarea[placeholder*='文章标题']"}
+    timeoutMs: 60000
+    note: 脚本等 8s 后直接操作标题；这里改为等标题框出现
+  - type: type
+    target: {selector: "textarea[placeholder*='文章标题']"}
+    text: "{{title}}"
+    mode: fill
+    clear: true
+    timeoutMs: 20000
+    note: >
+      publish_csdn.py:49-56 用 HTMLTextAreaElement.prototype.value 原生 setter + input 事件；
+      Playwright 的 fill 内部就是原生 setter + input 事件，语义等价。
+      待实机验证：fill 是否同样触发 CSDN 的 Vue 同步。
+      ⚠ NOTES-csdn.md:14：页面可能从 localStorage 恢复旧草稿，发布前需核对标题是否本篇。
+  # --- 2. 正文：CKEditor4 iframe 内逐字真实键入（publish_csdn.py:58-77）---
+  - type: frame
+    frame: {selector: "iframe.cke_wysiwyg_frame"}
+    timeoutMs: 20000
+    note: publish_csdn.py:59 query_selector("iframe.cke_wysiwyg_frame")
+  - type: type
+    target: {selector: "body"}
+    text: "{{body}}"
+    mode: type
+    delayMs: 15
+    timeoutMs: 180000
+    note: >
+      关键踩坑（NOTES-csdn.md:11-13、script L58-67）：CKEditor4 直接改 contentDocument.body.innerHTML
+      不触发编辑器同步（页面字数永远「共 0 字」），唯一可靠方式是点击 iframe body 区域聚焦后
+      keyboard.type 逐字真实键入（delay=15ms），段间按 Enter。
+      {{body}} 以 \n 分段，需要 actions.execute 在 mode=type 时把 \n 译成 Enter。
+      待实机验证：\n 分段行为、以及是否需要先点击 body 聚焦（脚本先 mouse.click(box.x+100, box.y+20)）。
+  - type: frame
+    frame: main
+    timeoutMs: 10000
+    note: 切回主 frame 才能读页面计数器与点标签按钮
+  - type: eval
+    expression: |
+      (() => {
+        const c = [...document.querySelectorAll('*')]
+          .filter(e => e.offsetParent && /共 \d+ 字/.test(e.textContent || '') && e.children.length === 0);
+        const n = c.length ? (c[0].textContent.match(/共 (\d+) 字/) || [])[1] : '0';
+        if (!n || Number(n) === 0) throw new Error('CKEditor 未接收正文内容（共 0 字）');
+        return Number(n);
+      })()
+    purpose: >
+      复刻 publish_csdn.py:70-76 的后置校验「共 N 字」必须 > 0；
+      SPEC 没有 assert 步骤类型，用 eval 逃生舱做断言。
+    retry: {times: 2, delayMs: 1500}
+    timeoutMs: 20000
+  # --- 3. 文章标签（必填；publish_csdn.py:80-104）---
+  - type: click
+    target: {selector: "button.tag__btn-tag"}
+    timeoutMs: 15000
+    note: publish_csdn.py:81-85 在 button.tag__btn-tag 里按文本「添加文章标签」再点
+  - type: waitFor
+    for: {selector: "input[placeholder*='自定义标签']"}
+    timeoutMs: 20000
+    note: 脚本 L86 固定等 2000ms 等标签弹层
+  - type: type
+    target: {selector: "input[placeholder*='自定义标签']"}
+    text: "{{tag}}"
+    mode: type
+    delayMs: 120
+    timeoutMs: 30000
+    note: >
+      publish_csdn.py:89-91 loc.click() 后 loc.type(tag, delay=120)。
+      必须真实键入：search-recommend-tag 接口由 Vue watch 的真实输入触发，JS setValue 无效（NOTES-csdn.md:20-21）。
+  - type: press
+    key: Enter
+    times: 1
+    timeoutMs: 10000
+    note: publish_csdn.py:92 —— Enter 直接创建自定义标签（官方支持，NOTES-csdn.md:22）
+  - type: eval
+    expression: |
+      (() => {
+        const sel = [...document.querySelectorAll('[class*=tag-box] *')]
+          .filter(e => e.offsetParent && e.children.length === 0 && (e.textContent || '').trim() === '{{tag}}');
+        if (!sel.length) throw new Error('自定义标签「{{tag}}」创建失败');
+        return true;
+      })()
+    purpose: 复刻 publish_csdn.py:94-100 的标签选中校验（eval 逃生舱做断言）
+    retry: {times: 4, delayMs: 1000}
+    timeoutMs: 20000
+  - type: eval
+    expression: |
+      (() => {
+        const el = document.elementFromPoint(200, 300);
+        if (el) el.click();
+        return {action: el ? 'clicked' : 'no-element'};
+      })()
+    purpose: >
+      复刻 publish_csdn.py:102 的 pg.mouse.click(200, 300)（点空白处关标签弹层）。
+      SPEC 没有坐标点击步骤，用 elementFromPoint 取同一坐标的元素再 click，语义最接近；
+      失败也无所谓（optional），列在 escape_hatches。
+    optional: true
+    timeoutMs: 10000
+  # --- 4. 发布博客（publish_csdn.py:107-123）---
+  - type: click
+    target: {role: button, text: 发布博客}
+    submit: true
+    timeoutMs: 20000
+    note: publish_csdn.py:108-112 在可见 button 里按 /发布博客/ 匹配后 JS click；dryRun 会跳过本步
+  - type: waitFor
+    for: {urlContains: creation/success}
+    timeoutMs: 60000
+    note: >
+      publish_csdn.py:113-115 等 5s 后要求跳转 creation/success/<articleId>，否则抛错。
+      该 URL 含 articleId，是 CSDN「当刻即可拼正式链接」的依据（NOTES-csdn.md:31-35）。
+  - type: eval
+    expression: |
+      (() => {
+        const t = [...document.querySelectorAll('*')]
+          .filter(e => e.children.length === 0 && /发布成功|失败|请|必须/.test(e.textContent || '') && e.offsetParent);
+        return t.length ? (t[0].textContent || '').trim() : '';
+      })()
+    purpose: 复刻 publish_csdn.py:116-120 的 toast 抓取，仅作为 run.json 证据
+    timeoutMs: 15000
+  - type: extract
+    spec:
+      - {name: publishedUrl, from: {url: true}}
+    note: >
+      成功页 URL（…/creation/success/<articleId>）即本轮 publishedUrl。
+      正式文章链接规则是 https://blog.csdn.net/<用户名>/article/details/<articleId>（NOTES-csdn.md:33），
+      用户名不在 recipe 配置里，故 final_url_template=null，由回查/拼接阶段补全。
+verify:
+  mode: immediate
+  list_url: https://mp.csdn.net/mp_blog/manage/article
+  title_match: exact_normalized
+  status_regex: "已发布|审核中|审核未通过"
+  accept_link_contains: ["blog.csdn.net"]
+  final_url_template: null
+  wait_ms: 7000
+  http_verify: true
+  # NOTES-csdn.md:35-36：正式链接当刻可拼，但审核未通过会 404，回查仍需 HTTP 200 校验
+  # （collect_links.py:126-131 的 requests.get 判定，这里用 Playwright APIRequestContext 等价实现）
+overrides: {}

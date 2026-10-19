@@ -1,0 +1,19 @@
+# The media-publish bundle patch: one insert adding the plugin row to a profile.
+# The row is addressed as `media-publish`; a profile's own cordis.patch.yml can
+# override its config by that id.
+- insert:
+    - id: media-publish
+      name: '@dsh-plugin/media-publish'
+      config:
+        # Absolute path to the Python interpreter that has Playwright installed.
+        # null/absent => the bundled DSH runtime python, then PATH.
+        pythonPath: null
+        # Runtime data root (accounts, storage state, recipes, runs).
+        # null/absent => %USERPROFILE%\.dsh\media-publish
+        dataDir: null
+        # Browsers are headed by default: 头条号 silently blocks headless publishes.
+        headless: false
+        # Refuse a real publish unless the caller explicitly passes dryRun:false.
+        requireExplicitPublish: true
+        # Per-call ceiling for engine requests; long replays may need more.
+        requestTimeoutMs: 120000
