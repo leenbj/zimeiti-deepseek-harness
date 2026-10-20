@@ -38,6 +38,16 @@ if "--selftest" in sys.argv[1:]:
     os.environ["MEDIA_DATA_DIR"] = str(_SELFTEST_TMP)
 
 try:  # python -m engine.sessiond
+    from . import preflight
+except ImportError:  # pragma: no cover - python engine/sessiond.py
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from engine import preflight
+
+# 必须在导入 actions/browser **之前**自检：它们会 `import playwright`，一旦缺失就会抛出
+# ModuleNotFoundError，操作者只看到一段 traceback。preflight 把它换成一句可执行的提示。
+preflight.ensure()
+
+try:  # python -m engine.sessiond
     from . import actions, browser, config_store, fingerprint, observe, paths
     from . import proxy_pool, rpc
     from .session import ActionError, Session
@@ -358,6 +368,10 @@ def _dependency_report() -> dict:
         },
         # requests 已经不是依赖项：代理抓取与健康检查改用标准库 urllib。
         "requests": {"required": False, "note": "replaced by the standard library (urllib.request)"},
+        # 下面两项**无法随包分发**：playwright 要与宿主运行时匹配，chromium 是约 150MB 的二进制。
+        # 它们由宿主提供，缺失时 preflight 会给出可执行的安装命令。
+        "playwright": {"version": _playwright_version(), "external": True},
+        "chromium": {"path": _detect_chromium_path(), "external": True},
     }
 
 

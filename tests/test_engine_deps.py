@@ -174,11 +174,48 @@ def test_recipes_parse() -> None:
     check("搜狐号主号" in dumped, "with unicode written literally, not escaped")
 
 
+def test_preflight() -> None:
+    """A missing dependency must produce an actionable line, not a traceback."""
+    import engine.preflight as preflight
+
+    # Healthy interpreter: preflight passes and reports nothing to stderr.
+    info = preflight.ensure()
+    check(info.get("yaml") is not None, "preflight sees the bundled PyYAML", info.get("yaml"))
+    check(info.get("yamlBundled") is True, "and knows it is the bundled copy", info.get("yamlBundled"))
+    check(info.get("playwright") is True, "preflight sees playwright")
+
+    # Broken interpreter: no site-packages at all, so playwright cannot be imported.
+    proc = subprocess.run(
+        [sys.executable, "-S", "-c", "import engine.sessiond"],
+        cwd=str(PLUGIN), capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    check(proc.returncode == preflight.EX_CONFIG,
+          "a missing playwright exits with EX_CONFIG (78), not a generic crash", proc.returncode)
+    err = proc.stderr or ""
+    check("ENGINE_DEPENDENCY_MISSING playwright" in err,
+          "and names the missing dependency", err.strip().splitlines()[:1])
+    check("HINT:" in err, "and offers a fix")
+    check("-m pip install playwright" in err, "with the exact install command")
+    check("playwright install chromium" in err, "including the browser download")
+    check("Traceback" not in err,
+          "without dumping a traceback the operator cannot act on", err.strip().splitlines()[:1])
+
+    # The report the host shows must distinguish bundled from external dependencies.
+    import engine.sessiond as sessiond
+
+    report = sessiond._dependency_report()
+    check(report["yaml"]["bundled"] is True, "the report marks yaml as bundled")
+    check(report["playwright"]["external"] is True, "and playwright as external", report["playwright"])
+    check(report["chromium"]["external"] is True, "and chromium as external", report["chromium"])
+    check(report["requests"]["required"] is False, "and requests as no longer required")
+
+
 def main() -> int:
     test_no_requests()
     test_vendored_payload()
     test_cold_interpreter()
     test_recipes_parse()
+    test_preflight()
     print()
     if FAILURES:
         print(f"{FAILURES} check(s) failed")
