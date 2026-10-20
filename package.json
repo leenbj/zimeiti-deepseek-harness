@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugin/media-publish",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "private": true,
   "description": "Agent-driven browser publishing for self-media accounts: record a publish flow into a replayable recipe, and isolate accounts with their own proxy IP",
   "type": "module",

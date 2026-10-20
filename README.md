@@ -48,6 +48,38 @@ DSH (Electron Host)
 `src/tool-kit.js` 里按宿主的注册契约重新实现——契约是从宿主产物里的 `defineTool` 逐字读出来的，
 不是猜的。
 
+### Python 引擎同样是零第三方依赖（PyYAML 随包分发）
+
+同一个理由在 Python 侧成立，而且**已经实际踩过**：PyYAML 与 requests 都不是标准库，DSH 运行时
+并不保证提供它们。一次运行时升级悄悄把两者都带走（`dsh-primary-runtime.previous` 里还有、当前
+运行时里没了），引擎在 **import 阶段**就崩，操作者在界面上只看到一句 `ENGINE_EXITED` 加一段
+`ModuleNotFoundError: No module named 'yaml'`。引擎进程是常驻的，所以这个坑**只在它下次需要启动时**
+才暴露——上一次能跑，不代表这一次能跑。
+
+处理方式不是「让用户去装包」，而是让插件自带：
+
+| 依赖 | 处理 | 位置 |
+|---|---|---|
+| **PyYAML 6.0.3** | **随插件分发纯 Python 实现**（17 个 `.py`，约 210KB；不含平台相关的 `.pyd`），MIT 许可原文一并附带 | `engine/_vendor/yaml/` + `LICENSE-PyYAML.txt` |
+| **requests** | **彻底移除**：带 headers/超时/代理的 HTTP 请求改用标准库 `urllib.request`（`ProxyHandler` 对 https 自动走 CONNECT 隧道），省掉 urllib3/certifi/idna/charset_normalizer 五个传递依赖 | `engine/proxy_pool.py` |
+
+`engine/__init__.py` 把 `_vendor` 挂到 `sys.path` **末尾**：解释器自带的优先（可用上 C 加速那份），
+缺失时回落到随包副本。因此**先导入 `engine` 包、再 `import yaml`** 是有意义的顺序；生产入口
+`python -m engine.sessiond` 天然满足它。
+
+`engine.status` 现在会报出实际来源，排查时不用再猜：
+
+```json
+"dependencies": {
+  "yaml": {"version": "6.0.3", "bundled": true, "libyaml": false, "module": ".../engine/_vendor/yaml/__init__.py"},
+  "requests": {"required": false}
+}
+```
+
+回归测试 `tests/test_engine_deps.py`（27 项）用一个 **`-S` 冷解释器**（禁用 site-packages，只回填
+playwright）真跑一遍：先证明裸 `import yaml` 在那里确实失败，再证明导入引擎包后一切正常、且
+`yaml` 来自 `_vendor`。这样「运行时把包换掉」这类故障不会再无声无息。
+
 ### 安装、升级与开发迭代（这里踩过坑，务必照做）
 
 **推荐：装成 tarball（真实副本），不要用 `link:`。**

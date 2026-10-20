@@ -278,16 +278,29 @@ def build_proxy(record: dict, extractor: dict, *, source: str, ttl_minutes: int 
     }
 
 
-def _requests_fetcher(url: str, method: str, headers: dict, timeout_ms: int) -> str:
-    import requests  # 延迟导入：selftest 不需要网络栈
+def _http_fetcher(url: str, method: str, headers: dict, timeout_ms: int) -> str:
+    """用标准库抓取提取器响应。
 
-    resp = requests.request(method or "GET", url, headers=headers or {},
-                            timeout=max(1, int(timeout_ms) / 1000))
-    resp.raise_for_status()
+    这里原先是 ``import requests``。requests 不是标准库，宿主运行时也不保证提供它：实测 DSH
+    运行时升级后 requests 与 PyYAML 一起消失，引擎在 import 阶段就崩。一个「带 headers 与超时的
+    GET/POST」用 ``urllib.request`` 就够，所以这个依赖被**彻底去掉**，而不是再打包一份 requests。
+
+    失败一律抛异常（由上层转成 PROXY_UNAVAILABLE），绝不假装拿到了空响应。
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        str(url),
+        method=str(method or "GET").upper(),
+        headers={str(k): str(v) for k, v in (headers or {}).items()},
+    )
+    timeout = max(1.0, int(timeout_ms) / 1000.0)
     try:
-        return resp.content.decode("utf-8", "replace")
-    except Exception:  # pragma: no cover
-        return resp.text
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} {exc.reason}") from exc
 
 
 # --------------------------------------------------------------- 提取器调用
@@ -365,7 +378,7 @@ def fetch_from_extractor(name: str, extractor: dict, *, cfg: dict | None = None,
     method = str(extractor.get("method") or "GET").upper()
     headers = extractor.get("headers") or {}
     timeout_ms = int((cfg.get("health_check") or {}).get("timeout_ms") or 15000)
-    fetch = fetcher or _requests_fetcher
+    fetch = fetcher or _http_fetcher
     try:
         raw = fetch(url, method, headers, timeout_ms)
     except ProxyUnavailable:
@@ -506,7 +519,7 @@ def test(proxy: dict, *, fetcher: Fetcher | None = None) -> dict:
 
     失败时 ``ok=false`` 且 detail 明确是**代理**问题（绝不提登录），也绝不回传密码。
     """
-    import requests
+    import urllib.request
 
     cfg = config_store.load_proxies()
     hc = cfg.get("health_check") or {}
@@ -515,21 +528,23 @@ def test(proxy: dict, *, fetcher: Fetcher | None = None) -> dict:
     server = str((proxy or {}).get("server") or "").strip()
     if not server:
         return {"ok": False, "ip": None, "latencyMs": None, "detail": "no proxy server given"}
-    proxies = {"http": auth_url(server, proxy.get("username"), proxy.get("password")),
-               "https": auth_url(server, proxy.get("username"), proxy.get("password"))}
+    proxy_url = auth_url(server, proxy.get("username"), proxy.get("password"))
+    # 标准库实现：ProxyHandler 对 https 目标会自动改用 CONNECT 隧道，行为与 requests 一致。
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
     started = time.time()
     try:
-        resp = requests.get(url, proxies=proxies, timeout=max(1, timeout_ms / 1000))
-        resp.raise_for_status()
+        with opener.open(url, timeout=max(1.0, timeout_ms / 1000.0)) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            body = response.read().decode("utf-8", "replace")
         latency = int((time.time() - started) * 1000)
-        body = resp.text
         ip = None
         try:
             parsed = json.loads(body)
             ip = parsed.get("ip") or parsed.get("origin") or parsed.get("query")
         except json.JSONDecodeError:
             ip = body.strip().splitlines()[0][:64] if body.strip() else None
-        return {"ok": True, "ip": ip, "latencyMs": latency, "detail": f"HTTP {resp.status_code}"}
+        return {"ok": True, "ip": ip, "latencyMs": latency, "detail": f"HTTP {status}"}
     except Exception as exc:
         latency = int((time.time() - started) * 1000)
         detail = _redact(f"{type(exc).__name__}: {exc}", proxy or {})[:300]

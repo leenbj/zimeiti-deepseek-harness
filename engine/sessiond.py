@@ -340,6 +340,27 @@ def _detect_chromium_path() -> str | None:
     return best
 
 
+def _dependency_report() -> dict:
+    """报出 PyYAML 的实际来源与版本。
+
+    这条信息专为「引擎起不来」而存在：PyYAML 曾被一次运行时升级悄悄带走，操作者只拿到一句
+    ``ENGINE_EXITED``，没有任何线索。现在 ``engine.status`` 会直说用的是随包副本还是解释器自带的。
+    """
+    import yaml
+
+    location = Path(getattr(yaml, "__file__", "") or "")
+    return {
+        "yaml": {
+            "version": getattr(yaml, "__version__", None),
+            "module": str(location) or None,
+            "bundled": "_vendor" in location.parts,
+            "libyaml": bool(getattr(yaml, "__with_libyaml__", False)),
+        },
+        # requests 已经不是依赖项：代理抓取与健康检查改用标准库 urllib。
+        "requests": {"required": False, "note": "replaced by the standard library (urllib.request)"},
+    }
+
+
 async def h_engine_status(engine: Engine, params: dict) -> dict:
     info = engine.bm.info()
     return {
@@ -359,6 +380,9 @@ async def h_engine_status(engine: Engine, params: dict) -> dict:
         "protocol": "ndjson",
         "methods": len(HANDLERS),
         "recipes": len(config_store.list_recipes()),
+        # 依赖来源：yaml 是随包分发还是解释器自带。这类信息在排查「引擎起不来」时最有用 ——
+        # 之前 PyYAML 被运行时升级悄悄带走，界面上只看到一句 ENGINE_EXITED，没有任何线索。
+        "dependencies": _dependency_report(),
     }
 
 

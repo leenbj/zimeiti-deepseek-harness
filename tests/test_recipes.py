@@ -30,6 +30,11 @@ if str(ROOT) not in sys.path:
 TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="media-publish-test-"))
 os.environ["MEDIA_DATA_DIR"] = str(TEST_DATA_DIR)
 
+# 先导入 engine 包，再导入 yaml。顺序有意义：`engine/__init__.py` 负责把随包分发的 PyYAML
+# （engine/_vendor/yaml）挂到 sys.path 上，所以解释器自己没装 PyYAML 时，先 import yaml 会失败。
+# 生产入口 `python -m engine.sessiond` 同样是先导入包，这里保持与之一致。
+import engine  # noqa: E402,F401
+
 import yaml  # noqa: E402
 
 from engine import play, record  # noqa: E402
