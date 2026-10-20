@@ -212,12 +212,28 @@ try {
   const codeInput = () => byProps(tree, (props) => props.id === 'mp-acc-code');
   check(!byProps(tree, (props) => props.id === 'mp-acc-code'),
     'the form is NOT rendered until it is asked for');
+  check(!byProps(tree, (props) => props.role === 'dialog'),
+    'and no dialog is on screen either');
 
   // ---- click “add account” ----
   addButton?.props?.onClick?.();
   const opened = await harness.settle(component, { t });
   check(Boolean(byProps(opened, (props) => props.id === 'mp-acc-code')),
     'clicking it opens the form (the account code input appears)');
+
+  // It must be a MODAL, not an inline expander: the account form is a guided pop-up.
+  const dialog = byProps(opened, (props) => props.role === 'dialog');
+  check(Boolean(dialog), 'it opens as a modal dialog (role="dialog"), not inline');
+  check(dialog?.props?.['aria-modal'] === 'true',
+    'marked aria-modal so assistive tech treats it as modal', dialog?.props);
+  check(dialog?.props?.['aria-labelledby'] === 'mp-acc-dialog-title',
+    'and labelled by its title', dialog?.props?.['aria-labelledby']);
+  check(Boolean(byProps(opened, (props) => String(props.className ?? '').includes('mp-overlay'))),
+    'presented over a full-screen overlay');
+  check(Boolean(byProps(opened, (props) => String(props.className ?? '').includes('mp-icon-btn'))),
+    'with an explicit close button in the header');
+  check(textOf(opened).includes(t('accountDialogHint')),
+    'and a line of guidance about what to fill in');
   check(Boolean(byProps(opened, (props) => props.id === 'mp-acc-media')),
     'with the platform selector');
   check(textOf(opened).includes(t('addAccount')),
