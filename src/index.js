@@ -49,7 +49,7 @@ export const inject = ['tools'];
  * `media_status` result reports an older value than this constant, the running profile is still
  * executing a previous revision. See the reload notes in README.md.
  */
-const PLUGIN_VERSION = '0.4.9';
+const PLUGIN_VERSION = '0.4.10';
 
 /** The tool modules, in prompt order: status first, then the workflow they drive, then configuration. */
 const MODULES = [status, account, proxy, session, observe, act, record, recipe, publish, configTool];
