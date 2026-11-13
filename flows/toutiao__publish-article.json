@@ -1,0 +1,80 @@
+{
+  "id": "toutiao__publish-article",
+  "media": "toutiao",
+  "label": "头条号发布图文（基础版）",
+  "loginCheck": {
+    "urlContains": "profile_v4",
+    "text": "发布"
+  },
+  "params": [
+    { "name": "title", "required": true, "description": "标题，最多 30 字" },
+    { "name": "body", "required": true, "description": "正文纯文本，空行分段" }
+  ],
+  "steps": [
+    {
+      "action": "goto",
+      "url": "https://mp.toutiao.com/profile_v4/graphic/publish",
+      "waitUntil": "domcontentloaded",
+      "timeoutMs": 45000
+    },
+    {
+      "action": "waitFor",
+      "selector": "textarea[placeholder*='文章标题']",
+      "timeoutMs": 45000
+    },
+    {
+      "action": "eval",
+      "expression": "(() => { const drawer = document.querySelector('.ai-assistant-drawer'); if (!drawer || !drawer.offsetParent) return { action: 'absent' }; const close = drawer.querySelector('svg.close-btn'); if (close) close.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return { action: close ? 'dispatched' : 'no-close-btn' }; })()",
+      "optional": true,
+      "timeoutMs": 10000
+    },
+    {
+      "action": "fill",
+      "selector": "textarea[placeholder*='文章标题']",
+      "value": "{{title}}",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "fill",
+      "selector": ".ProseMirror[contenteditable=true]",
+      "value": "{{body}}",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "eval",
+      "expression": "(() => { const radios = [...document.querySelectorAll('.article-cover .byte-radio')]; const target = radios.find((r) => (r.textContent || '').trim() === '单图'); if (!target) return { action: 'no-cover-section' }; target.scrollIntoView({ block: 'center' }); const input = target.querySelector('input'); if (input && !input.checked) input.click(); return { action: 'ok', checked: !!(input && input.checked) }; })()",
+      "optional": true,
+      "timeoutMs": 15000
+    },
+    {
+      "action": "screenshot",
+      "name": "before-submit"
+    },
+    {
+      "action": "click",
+      "text": "预览并发布",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "waitFor",
+      "text": "确认发布",
+      "timeoutMs": 30000
+    },
+    {
+      "action": "click",
+      "text": "确认发布",
+      "submit": true,
+      "timeoutMs": 20000
+    },
+    {
+      "action": "waitFor",
+      "urlContains": "graphic/articles",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "extract",
+      "name": "submitUrl",
+      "url": true
+    }
+  ]
+}

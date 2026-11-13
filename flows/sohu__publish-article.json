@@ -1,0 +1,95 @@
+{
+  "id": "sohu__publish-article",
+  "media": "sohu",
+  "label": "搜狐号发布图文",
+  "loginCheck": {
+    "urlContains": "contentManagement/first/page",
+    "text": "发布内容"
+  },
+  "params": [
+    { "name": "title", "required": true, "description": "标题，5-72 字" },
+    { "name": "body", "required": true, "description": "正文纯文本，空行分段" },
+    { "name": "declaration", "required": false, "default": "无需声明", "description": "创作声明；搜狐要求必选" }
+  ],
+  "steps": [
+    {
+      "action": "goto",
+      "url": "https://mp.sohu.com/mpfe/v4/contentManagement/first/page",
+      "waitUntil": "domcontentloaded",
+      "timeoutMs": 45000
+    },
+    {
+      "action": "waitFor",
+      "selector": "button.mt-button.publish-btn",
+      "timeoutMs": 45000
+    },
+    {
+      "action": "click",
+      "selector": "button.mt-button.publish-btn",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "waitFor",
+      "urlContains": "addarticle",
+      "timeoutMs": 30000
+    },
+    {
+      "action": "click",
+      "text": "我知道了",
+      "exact": true,
+      "optional": true,
+      "timeoutMs": 8000
+    },
+    {
+      "action": "fill",
+      "selector": "input[placeholder*='请输入标题']",
+      "value": "{{title}}",
+      "humanize": "type",
+      "minDelayMs": 55,
+      "maxDelayMs": 165,
+      "timeoutMs": 30000
+    },
+    {
+      "action": "fill",
+      "selector": ".ql-editor[contenteditable=true]",
+      "value": "{{body}}",
+      "humanize": "paste",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "waitFor",
+      "selector": ".statement-panel",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "eval",
+      "expression": "(() => { const label = [...document.querySelectorAll('label.el-radio')].find((l) => (l.textContent || '').trim() === '{{declaration}}'); const input = label && label.querySelector('input.el-radio__original'); if (!label || !input) throw new Error('创作声明选项不存在: {{declaration}}'); input.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); input.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); input.click(); input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "eval",
+      "expression": "(() => { const label = [...document.querySelectorAll('label.el-radio')].find((l) => (l.textContent || '').trim() === '{{declaration}}'); const input = label && label.querySelector('input.el-radio__original'); if (!input || !(input.checked || (label.className || '').includes('is-checked'))) throw new Error('创作声明未选中'); return true; })()",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "screenshot",
+      "name": "before-submit"
+    },
+    {
+      "action": "click",
+      "selector": "li.publish-report-btn.active",
+      "submit": true,
+      "timeoutMs": 15000
+    },
+    {
+      "action": "waitFor",
+      "urlContains": "first/page",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "extract",
+      "name": "submitUrl",
+      "url": true
+    }
+  ]
+}

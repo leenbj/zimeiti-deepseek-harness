@@ -1,59 +1,57 @@
 /**
- * publish.js — `media_publish`: replay a recipe (run) and fetch the final link after review (backfill).
+ * publish.js — `egolite_publish`: guarded, replayable publishing in one account browser.
  *
- * The safety rail from SPEC §7: `dryRun` defaults to TRUE, so a real publish needs an explicit
- * `dryRun:false`. A dry run opens the pages, fills the form and screenshots, but skips every step marked
- * `submit: true`. Both ops get an explicit, large engine timeout: a replay with self-healing is slow.
+ * The default is a dry run: every step runs up to the one marked `submit:true`, which is skipped and
+ * captured as a screenshot. A real publish requires `dryRun:false`. The run directory keeps the report
+ * and screenshots as evidence.
  *
- * @module media-publish/tools/publish
+ * @module ego-publish/tools/publish
  */
-import { defineTool } from '../tool-kit.js';
-import {
-  TIMEOUT, argumentFailure, failure, renderEnvelope, resolveRecipe, success,
-} from './common.js';
+import { join } from 'node:path';
 
-const OPS = ['run', 'backfill'];
-const PROXY_POLICIES = ['sticky', 'rotate', 'direct'];
+import { EgoError } from '../cdp.js';
+import { flowSummary, loadFlows, runFlow } from '../flows.js';
+import { ensureDir, stamp, writeJson } from '../store.js';
+import { defineTool } from '../tool-kit.js';
+import { TIMEOUT, openPage, renderEnvelope, requireAccount, sanitize } from './common.js';
 
 /**
  * @param {any} ctx
- * @param {{ engine: any, settings: Record<string, any>, dataDir: string, python: Record<string, any>,
- *           pluginRoot: string, handoffs?: any }} deps
+ * @param {{ accounts: any, manager: any, settings: Record<string, any>, dataDir: string, pluginRoot: string,
+ *           log: (line: string) => void }} deps
  */
 export function register(ctx, deps) {
-  const { engine, settings, dataDir, pluginRoot, handoffs } = deps;
-  const paths = { dataDir, pluginRoot };
+  const { accounts, manager, checks, settings, dataDir, pluginRoot, log } = deps;
 
   ctx.tools.register(defineTool({
-    name: 'media_publish',
+    name: 'egolite_publish',
     description:
-      'Replay a recipe to publish (or to rehearse). Ops: '
-      + '"run" {recipeId|media, accountCode, params, dryRun?, headless?, heal?, stopOnError?, proxyPolicy?} — '
-      + 'opens the account\'s isolated context, executes the recipe step by step, self-heals broken locators and '
-      + 'writes <dataDir>/runs/<timestamp>-<recipe>-<account>/ with run.json, per-step status and screenshots; '
-      + '"backfill" {recipeId|media, accountCode, title, headless?} — after the platform has reviewed the post, go '
-      + 'back and fetch the real published URL. IMPORTANT: dryRun DEFAULTS TO true — a dry run fills the form and '
-      + 'screenshots but SKIPS the final submit, and the result says so. Real publishing requires an explicit '
-      + 'dryRun:false (settings.requireExplicitPublish). `params` holds the publish values (title/body/...), which '
-      + 'are NOT the same as the recipe\'s parameter declarations you read with media_recipe {op:"show"}. On '
-      + 'failure the result carries failedStep, the engine error code, error.details.candidates (candidate '
-      + 'elements for a broken locator) and the run directory to inspect.',
+      'Publish an article with one account through a replayable flow. The account\'s isolated ego browser is opened '
+      + '(its own cookies and proxy), the saved sign-in is checked, then the flow runs with {{title}}/{{body}}/... '
+      + 'substituted. DRY RUN BY DEFAULT: stops before the step marked submit:true and screenshots the filled form. '
+      + 'Pass dryRun:false only when the user really wants to publish. Every step, screenshot and extracted URL is '
+      + 'written under <dataDir>/runs/<timestamp>-<flow>-<account>/.',
     parameters: {
-      op: { type: 'string', enum: OPS, required: true, description: 'run = replay the recipe, backfill = fetch the reviewed post\'s final URL.' },
-      recipeId: { type: 'string', description: 'Recipe id, e.g. "toutiao__publish-article". Required unless media identifies exactly one recipe.' },
-      media: { type: 'string', description: 'Platform shortcut (sohu | toutiao | csdn) used when it has exactly one recipe.' },
-      accountCode: { type: 'string', required: true, description: 'The account to publish as, e.g. "a-1" (its login state, fingerprint and proxy are used).' },
+      accountCode: { type: 'string', required: true, description: 'Account that publishes (its browser, proxy and login).' },
+      flow: { type: 'string', description: 'Flow id, e.g. "sohu__publish-article".' },
+      media: { type: 'string', enum: ['sohu', 'toutiao', 'csdn', 'custom'], description: 'Pick the flow by platform when there is exactly one.' },
       params: {
         type: 'object',
         additionalProperties: true,
-        description: 'op:"run" — the recipe parameter VALUES, e.g. {title:"...", body:"..."}. Get the required names from media_recipe {op:"show"}.',
+        description: 'Publish values, e.g. {title:"...", body:"..."}; also fills any extra {{name}} placeholder.',
       },
-      dryRun: { type: 'boolean', description: 'Default TRUE. Set false ONLY when you really want to publish: dry runs stop before the submit step.' },
-      headless: { type: 'boolean', description: 'Override the browser mode for this run; Toutiao needs false.' },
-      heal: { type: 'boolean', description: 'Self-heal broken locators from a fresh snapshot (default true).' },
-      stopOnError: { type: 'boolean', description: 'Stop at the first failing step (default true); false keeps going and reports every failure.' },
-      proxyPolicy: { type: 'string', enum: PROXY_POLICIES, description: 'sticky (default) reuses the account\'s bound IP, rotate takes a new one, direct bypasses the proxy.' },
-      title: { type: 'string', description: 'op:"backfill" — the article title to look up in the platform\'s post list.' },
+      dryRun: {
+        type: 'boolean',
+        description: 'Default true: fill the form and stop before submit. Pass false to really publish.',
+      },
+      screenshots: {
+        type: 'boolean',
+        description: 'Screenshot every step as well as the submit/error points (default false).',
+      },
+      skipLoginCheck: {
+        type: 'boolean',
+        description: 'Skip the pre-flight signed-in check (only when the flow has no loginCheck).',
+      },
     },
     output: {
       schema: {
@@ -61,179 +59,189 @@ export function register(ctx, deps) {
         additionalProperties: true,
         properties: {
           ok: { type: 'boolean', required: true },
-          op: { type: 'string' },
-          method: { type: 'string' },
-          summary: { type: 'string' },
+          message: { type: 'string', required: true },
           data: { type: 'object', additionalProperties: true },
-          warnings: { type: 'array', items: { type: 'string' } },
-          handoff: { type: 'object', additionalProperties: true },
-          error: { type: 'object', additionalProperties: true },
-          nextSteps: { type: 'array', items: { type: 'string' } },
         },
       },
-      render: (_args, value) => renderEnvelope(
-        value.ok
-          ? `media_publish ${value.op} — ${value.data?.dryRun === true ? 'DRY RUN (nothing was submitted)' : 'ok'}`
-          : `media_publish ${value.op ?? '?'} — failed (${value.error?.code ?? 'ERROR'})`,
-        value,
-        renderLines(value),
-      ),
+      render: (_args, value) => renderEnvelope(value.message, value),
     },
+    timeoutMs: TIMEOUT.PUBLISH_MS,
     async execute(args) {
-      const op = String(args.op);
-      const accountCode = args.accountCode ? String(args.accountCode).trim() : '';
-      const base = { tool: 'media_publish', op };
-      if (!accountCode) {
-        return argumentFailure({
-          ...base,
-          message: `op:"${op}" needs "accountCode"`,
-          nextSteps: ['media_account {op:"list"} to pick a code; its login state must be valid first (media_account {op:"check"}).'],
+      const account = requireAccount(accounts, args.accountCode);
+      const flows = loadFlows({ pluginRoot, dataDir });
+      let flow;
+      if (args.flow) {
+        flow = flows.find((item) => item.id === args.flow);
+        if (!flow) throw new EgoError('FLOW_NOT_FOUND', `no flow with id "${args.flow}"`, { known: flows.map((item) => item.id) });
+      } else if (args.media) {
+        const matches = flows.filter((item) => item.media === args.media);
+        if (matches.length !== 1) throw new EgoError('AMBIGUOUS_FLOW', `pass flow explicitly; media "${args.media}" matched ${matches.length} flows`, { ids: matches.map((item) => item.id) });
+        flow = matches[0];
+      } else {
+        const matches = flows.filter((item) => item.media === account.media);
+        if (matches.length !== 1) throw new EgoError('NO_FLOW', `no single flow for account media "${account.media}"; pass flow explicitly`, { ids: flows.map((item) => item.id) });
+        flow = matches[0];
+      }
+      if (!flow.steps?.length) throw new EgoError('INVALID_FLOW', `flow "${flow.id}" has no steps`);
+
+      const explicit = args.dryRun === true || args.dryRun === false;
+      const dryRun = explicit ? args.dryRun : Boolean(settings.requireExplicitPublish);
+
+      // Human cadence guard: one account does not publish twice within minutes. The window is derived
+      // from (account, previous publish) so re-running the same call answers the same way instead of
+      // flipping between allowed and refused on every attempt.
+      if (!dryRun) {
+        const lastAt = Date.parse(account.lastPublishAt ?? '') || 0;
+        const minMin = Math.max(0, Number(settings.publishIntervalMinMinutes ?? 45));
+        const maxMin = Math.max(minMin, Number(settings.publishIntervalMaxMinutes ?? 150));
+        if (lastAt) {
+          const nextAt = lastAt + (minMin + stableJitter(`${account.code}:${lastAt}`, maxMin - minMin)) * 60000;
+          if (Date.now() < nextAt) {
+            const elapsedMin = Math.round((Date.now() - lastAt) / 60000);
+            throw new EgoError('PUBLISH_TOO_SOON', `account ${account.code} published ${elapsedMin} min ago; the next slot opens at ${new Date(nextAt).toISOString()}`, {
+              accountCode: account.code,
+              lastPublishAt: account.lastPublishAt,
+              nextPublishAt: new Date(nextAt).toISOString(),
+            });
+          }
+        }
+      }
+
+      const { page } = await openPage(manager, account.code);
+      const runDir = ensureDir(join(dataDir, 'runs', `${stamp()}-${flow.id}-${account.code}`));
+      const report = {
+        startedAt: new Date().toISOString(),
+        accountCode: account.code,
+        media: account.media,
+        flow: flowSummary(flow),
+        dryRun,
+        proxy: manager.get(account.code)?.proxyUrl ?? null,
+      };
+
+      // Pre-flight: confirm the saved sign-in still works on the platform home page.
+      const check = flow.loginCheck;
+      if (!args.skipLoginCheck && check && (check.urlContains || check.text || check.selector)) {
+        const homeUrl = check.url || account.homeUrl;
+        if (homeUrl) {
+          try {
+            await page.goto(homeUrl, { timeoutMs: settings.navigationTimeoutMs, waitUntil: 'domcontentloaded', settleMs: 1000 });
+            // These consoles render their shell asynchronously: a single read right after navigation
+            // reports "signed out" on a valid session. Poll for a decisive answer instead.
+            const deadline = Date.now() + 12000;
+            let url = '';
+            let urlOk = false;
+            let textOk = false;
+            for (;;) {
+              url = String(await page.url());
+              const text = check.text ? await page.text(3000) : '';
+              urlOk = !check.urlContains || url.includes(check.urlContains);
+              textOk = !check.text || text.includes(check.text);
+              if ((urlOk && textOk) || Date.now() >= deadline) break;
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+            if (!urlOk || !textOk) {
+              const failure = new EgoError('LOGIN_REQUIRED', `account ${account.code} is not signed in to ${account.media} (landed on ${url})`, {
+                accountCode: account.code,
+                url,
+                needsHuman: true,
+                instructions: `Run egolite_account {op:"login", code:"${account.code}"} and complete the sign-in in the ego window, then publish again.`,
+              });
+              report.error = failure.message;
+              writeJson(join(runDir, 'run.json'), { ...report, finishedAt: new Date().toISOString() });
+              throw failure;
+            }
+          } catch (error) {
+            if (error instanceof EgoError && error.code === 'LOGIN_REQUIRED') throw error;
+            log(`login pre-flight failed to navigate (${error?.message ?? error}); continuing to the flow`);
+          }
+        }
+      }
+
+      let outcome;
+      try {
+        outcome = await runFlow({
+          page,
+          flow,
+          params: args.params ?? {},
+          dryRun,
+          runDir,
+          screenshotEveryStep: args.screenshots === true,
+          settings,
+          log,
+        });
+      } catch (error) {
+        writeJson(join(runDir, 'run.json'), {
+          ...report,
+          failed: { code: error?.code ?? 'ERROR', message: String(error?.message ?? error), details: error?.details ?? null },
+          finishedAt: new Date().toISOString(),
+        });
+        if (error instanceof EgoError) {
+          error.details = { ...(error.details ?? {}), runDir };
+          throw error;
+        }
+        throw new EgoError('PUBLISH_FAILED', String(error?.message ?? error), { runDir });
+      }
+
+      writeJson(join(runDir, 'run.json'), { ...report, outcome, finishedAt: new Date().toISOString() });
+      // Only a real submit starts this account's interval clock; dry runs publish nothing.
+      if (!dryRun && outcome?.submitSkipped !== true) {
+        accounts.touch(account.code, { lastPublishAt: new Date().toISOString() });
+      }
+
+      // A real publish schedules one delayed check: verify the link is live, then sample 积分.
+      let scheduledCheck = null;
+      if (!dryRun && checks) {
+        const outputs = outcome.outputs ?? {};
+        const publishedUrl = outputs.publishedUrl || outputs.publicUrl || null;
+        scheduledCheck = checks.schedule({
+          accountCode: account.code,
+          url: publishedUrl,
+          title: String(args.params?.title ?? ''),
+          flowId: flow.id,
         });
       }
-      const ctxFor = (method) => ({ ...base, method, sessionId: null, accountCode, handoffs });
 
-      // `recipeId` is used verbatim (the engine also accepts paths); `media` is resolved here.
-      let recipeId = args.recipeId ? String(args.recipeId).trim() : '';
-      if (!recipeId) {
-        const selected = resolveRecipe(paths, { recipeId: null, media: args.media });
-        if (!selected.ok || !selected.recipe) {
-          return argumentFailure({
-            ...base,
-            message: selected.message ?? 'pass recipeId, or media when that platform has exactly one recipe',
-            nextSteps: [`Available recipes: ${selected.catalog.map((r) => r.id).join(', ') || 'none'} (media_recipe {op:"list"}).`],
-          });
-        }
-        recipeId = selected.recipe.id;
-      }
-
-      switch (op) {
-        case 'run': {
-          const method = 'play.run';
-          const dryRun = args.dryRun === undefined ? true : args.dryRun === true;
-          const params = args.params && typeof args.params === 'object' && !Array.isArray(args.params) ? args.params : {};
-          const engineParams = {
-            recipeId,
-            accountCode,
-            params,
-            dryRun,
-            stopOnError: args.stopOnError === undefined ? true : args.stopOnError === true,
-            heal: args.heal === undefined ? true : args.heal === true,
-            proxyPolicy: args.proxyPolicy ? String(args.proxyPolicy) : 'sticky',
-          };
-          if (args.headless !== undefined) engineParams.headless = args.headless === true;
-          try {
-            const result = await engine.call(method, engineParams, { timeoutMs: TIMEOUT.PUBLISH_MS });
-            const warnings = [];
-            if (dryRun) warnings.push('DRY RUN: the submit step was skipped, nothing was published.');
-            if (!dryRun && settings.requireExplicitPublish) warnings.push('REAL PUBLISH (dryRun:false was passed explicitly).');
-            const failedStep = result?.failedStep ?? null;
-            return success({
-              ...base,
-              method,
-              summary: result?.ok === true
-                ? `${dryRun ? 'dry run of ' : ''}${recipeId} on ${accountCode}: ${result?.steps?.length ?? 0} steps ok`
-                  + `${result?.publishedUrl ? `, publishedUrl=${result.publishedUrl}` : ''}`
-                : `${recipeId} on ${accountCode} FAILED at step ${failedStep?.index ?? '?'}`
-                  + `${failedStep?.error?.code ? ` (${failedStep.error.code})` : ''}${failedStep?.error?.message ? `: ${failedStep.error.message}` : ''}`,
-              data: { ...result, dryRun, recipeId, accountCode },
-              warnings: [...warnings, ...(result?.warnings ?? [])],
-              nextSteps: result?.ok === true
-                ? (dryRun
-                  ? [
-                    'This was a DRY RUN. To really publish, call again with dryRun:false — and only then.',
-                    result?.runDir ? `Review the screenshots in ${result.runDir} first.` : 'Review the run directory screenshots first.',
-                  ]
-                  : [
-                    result?.publishedUrl
-                      ? `Published: ${result.publishedUrl}`
-                      : 'The recipe returned no publishedUrl: use media_publish {op:"backfill", title:"..."} once the post clears review.',
-                    ...(result?.runDir ? [`Evidence: ${result.runDir}`] : []),
-                  ])
-                : [
-                  failedStep
-                    ? `Inspect step ${failedStep.index} (${failedStep.type ?? '?'})${result?.runDir ? ` and ${result.runDir}` : ''}.`
-                    : 'Inspect the run directory for run.json and screenshots.',
-                  'Fix the failing step\'s target in the recipe (or re-record that stretch), then re-run with dryRun:true.',
-                ],
-            });
-          } catch (error) {
-            return failure(error, {
-              ...ctxFor(method),
-              nextSteps: [
-                error?.code === 'LOGIN_REQUIRED' || error?.code === 'RECIPE_INVALID'
-                  ? `media_account {op:"check", code:"${accountCode}"} if the failure is a stale login state.`
-                  : '',
-                error?.code === 'PARAM_MISSING'
-                  ? `media_recipe {op:"show", recipeId:"${recipeId}"} lists the required params.`
-                  : '',
-                `Recipe used: ${recipeId}. A failed replay always leaves a run directory under <dataDir>/runs.`,
-              ].filter(Boolean),
-            });
-          }
-        }
-
-        case 'backfill': {
-          const method = 'play.backfill';
-          const title = args.title ? String(args.title) : '';
-          if (!title) {
-            return argumentFailure({
-              ...base,
-              method,
-              message: 'op:"backfill" needs "title" (the title used at publish time)',
-              nextSteps: ['Use the exact title you passed to media_publish {op:"run"}.'],
-            });
-          }
-          try {
-            const result = await engine.call(method, {
-              recipeId,
-              accountCode,
-              title,
-              ...(args.headless !== undefined ? { headless: args.headless === true } : {}),
-            }, { timeoutMs: TIMEOUT.BACKFILL_MS });
-            return success({
-              ...base,
-              method,
-              summary: result?.publishedUrl
-                ? `backfill found ${result.publishedUrl}`
-                : `backfill ran but found no final URL for "${title}"`,
-              data: { ...result, recipeId, accountCode, title },
-              nextSteps: result?.publishedUrl
-                ? ['Store/report the final link; nothing else to do for this post.']
-                : ['The post may still be under review: retry later, or check the platform\'s post list manually.'],
-            });
-          } catch (error) {
-            return failure(error, {
-              ...ctxFor(method),
-              nextSteps: error?.code === 'UNKNOWN_METHOD' || error?.code === 'UNSUPPORTED'
-                ? ['This engine build did not answer play.backfill: report it to the engine owner instead of retrying.',
-                  'Meanwhile the recipe\'s `verify` section and the platform\'s post list are the fallback for the final link.']
-                : ['The post may still be under review; retry backfill later, or check the platform\'s post list manually.'],
-            });
-          }
-        }
-
-        default:
-          return argumentFailure({ ...base, message: `unknown op "${op}"`, nextSteps: [`Supported ops: ${OPS.join(', ')}.`] });
-      }
+      return sanitize({
+        ok: true,
+        message: dryRun
+          ? `dry run of ${flow.id} on ${account.code}: form filled, submit skipped`
+          : `${flow.id} submitted on ${account.code}`,
+        data: {
+          accountCode: account.code,
+          flowId: flow.id,
+          dryRun,
+          submitSkipped: outcome.submitSkipped,
+          steps: outcome.steps,
+          outputs: outcome.outputs,
+          finalUrl: outcome.finalUrl,
+          runDir,
+          scheduledCheck,
+        },
+        nextSteps: dryRun
+          ? [`Review ${runDir} screenshots, then repeat with dryRun:false to publish.`]
+          : [
+            `A link check and 积分 refresh is scheduled at ${scheduledCheck?.dueAt ?? 'the configured delay'}; nothing else to do now.`,
+            'The platform may review the post before it gets a public URL; the check retries if the link is not live yet.',
+          ],
+      });
     },
-    presentCall: (args) => ({ card: 'generic', title: `media_publish ${args?.op ?? ''}`.trim(), kind: 'other' }),
+    presentCall: (args) => ({ card: 'generic', title: `egolite publish ${args.flow ?? args.media ?? ''}`.trim(), kind: 'other' }),
   }));
 }
 
 /**
- * @param {any} value
- * @returns {string[]}
+ * Deterministic 0..span offset. Two calls with the same inputs must land on the same slot, otherwise
+ * a retry could pass a guard that just refused it.
+ * @param {string} key
+ * @param {number} span
+ * @returns {number}
  */
-function renderLines(value) {
-  if (!value?.ok || !value.data) return [];
-  const data = value.data;
-  if (value.op === 'backfill') {
-    return [`  publishedUrl=${data.publishedUrl ?? '-'}`, `  title=${data.title ?? '-'}`, ...(data.detail ? [`  detail=${data.detail}`] : [])];
+function stableJitter(key, span) {
+  if (!(span > 0)) return 0;
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
   }
-  const steps = data.steps ?? [];
-  return [
-    `  dryRun=${data.dryRun === true} runDir=${data.runDir ?? '-'} publishedUrl=${data.publishedUrl ?? '-'}`,
-    ...(data.failedStep ? [`  failedStep=#${data.failedStep.index} ${data.failedStep.type ?? ''} ${data.failedStep.error?.code ?? ''} ${data.failedStep.error?.message ?? ''}`] : []),
-    ...steps.map((s) => `  ${String(s.index).padStart(3, ' ')}  ${s.type ?? '?'}  ${s.status}${s.ms !== undefined ? ` ${s.ms}ms` : ''}${s.error ? `  ${s.error.code ?? ''} ${s.error.message ?? ''}` : ''}`),
-  ];
+  return hash % (Math.floor(span) + 1);
 }

@@ -1,25 +1,27 @@
 {
-  "name": "@dsh-plugin/media-publish",
-  "version": "0.4.11",
+  "name": "@dsh-plugin/ego-publish",
+  "version": "0.5.0",
   "private": true,
-  "description": "Agent-driven browser publishing for self-media accounts: record a publish flow into a replayable recipe, and isolate accounts with their own proxy IP",
+  "description": "Agent-driven publishing on top of ego lite: isolated browser profiles per account, a shared proxy pool assigned per account, persistent logins, replayable publish flows, and a Web UI",
   "type": "module",
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
     "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "lib",
-    "engine",
-    "!engine/__pycache__",
-    "!engine/**/__pycache__",
+    "flows",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml",
-    "docs",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "license": "MIT",
   "dsh": {
@@ -35,7 +37,9 @@
       ]
     }
   },
-  "comment": "No runtime dependencies on purpose. The plugin is installed as a pnpm `link:` dependency, and pnpm does not install a linked package's own dependencies, so any bare import of a DSH package would fail to resolve from the profile. The two helpers that would otherwise come from @deepseek-ai/dsh-tools / @deepseek-ai/schemastery are reimplemented against the frozen registry contract in src/tool-kit.js. See docs/SPEC.md 搂5. The browser half under lib/ is hand-written in the shipped bundle shape, so it needs no build step; its only module requests are `react` and `react/jsx-runtime`, both of which the shell seeds in its frozen PLATFORM_MODULES table, so `dsh.client.external` is empty by design.",
-  "dependencies": {},
+  "comment": "Host half plus a hand-written Web client half, no runtime dependencies. The plugin drives the installed ego lite binary over CDP (no Playwright, no engine process). The client bundle requests only `react`, which the shell seeds.",
+  "dependencies": {
+    "playwright": "^1.64.1"
+  },
   "peerDependencies": {}
 }

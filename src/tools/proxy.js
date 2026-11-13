@@ -1,48 +1,55 @@
 /**
- * proxy.js — `media_proxy`: the proxy pool (fetch / test / rotate).
+ * proxy.js — `egolite_proxy`: a shared proxy pool plus per-account assignment.
  *
- * SECURITY: proxy passwords live in `secrets.yaml` and must never reach the model. The engine already
- * answers with `hasPassword` instead of the secret, and this module additionally runs every result
- * through `sanitize()`, so a future engine change cannot leak one either.
+ * A proxy is added once to the pool and then assigned to any number of account browsers. Each account
+ * launches with the assigned entry's server (and credentials), so two accounts can share one proxy, or
+ * each use a different one, without retyping anything.
  *
- * @module media-publish/tools/proxy
+ * @module ego-publish/tools/proxy
  */
+import { EgoError } from '../cdp.js';
+import { publicAccount } from '../accounts.js';
+import { publicProxy, resolveAccountProxy } from '../proxies.js';
+import { parseProxy, redactProxy, testProxy } from '../proxy.js';
+import { extractProxies } from '../provider.js';
 import { defineTool } from '../tool-kit.js';
-import {
-  TIMEOUT, argumentFailure, failure, renderEnvelope, resolveProxyArg, scrubCredentials, success,
-} from './common.js';
-
-const OPS = ['fetch', 'test', 'rotate'];
+import { TIMEOUT, renderEnvelope, requireAccount, sanitize } from './common.js';
 
 /**
  * @param {any} ctx
- * @param {{ engine: any, settings: Record<string, any>, dataDir: string, python: Record<string, any>,
- *           pluginRoot: string, handoffs?: any }} deps
+ * @param {{ accounts: any, proxies: any, manager: any, settings: Record<string, any>, log: (line: string) => void }} deps
  */
 export function register(ctx, deps) {
-  const { engine, dataDir, handoffs } = deps;
+  const { accounts, proxies, manager, configStore, log } = deps;
+
+  /** Accounts currently pointing at one pool entry. */
+  function usageOf(id) {
+    return accounts.list().filter((account) => account.proxyId === id).map((account) => account.code);
+  }
 
   ctx.tools.register(defineTool({
-    name: 'media_proxy',
+    name: 'egolite_proxy',
     description:
-      'Inspect and rotate the proxy pool so each account can leave from a different IP. Ops: '
-      + '"fetch" {code?, force?} (take an IP: sticky accounts keep their bound proxy until it expires or '
-      + 'force:true), "test" {code?} or {proxy} (probe the exit IP and latency; {proxy} accepts an object, a '
-      + 'bare server, or "static:<index>" from <dataDir>/proxies.yaml), "rotate" {code} (drop the sticky '
-      + 'binding and take a new IP). Results are ALWAYS desensitized: a proxy password is never returned — '
-      + 'look at hasPassword instead. A dead extractor or unreachable proxy surfaces as PROXY_UNAVAILABLE, '
-      + 'never as a login error.',
+      'Manage a shared proxy pool and assign entries to account browsers. Ops: list — the pool with assigned accounts; '
+      + 'add — create an entry {label, server, username?, password?}; update — change an entry by id; remove — delete it '
+      + '(assigned accounts fall back to direct); assign — point an account at an entry ({code, id}) or back to direct '
+      + '(id:null); test — probe the exit IP of an entry ({id}) or of an account\'s current proxy ({code}); set/clear — '
+      + 'legacy shortcuts that add-then-assign or unassign. Each account browser is launched with its own '
+      + '--proxy-server, so assignments never leak across accounts.',
     parameters: {
-      op: { type: 'string', enum: OPS, required: true, description: 'Which proxy operation to run.' },
-      code: { type: 'string', description: 'Account code whose bound proxy is used, e.g. "a-1".' },
-      force: { type: 'boolean', description: 'op:"fetch" — ignore the sticky cache and take a fresh IP now.' },
-      proxy: {
-        oneOf: [
-          { type: 'string', description: 'Server, "server|user|pass", or "static:<index>" from <dataDir>/proxies.yaml.' },
-          { type: 'object', additionalProperties: true, description: 'A proxy object {server, username?, password?}.' },
-        ],
-        description: 'op:"test" — probe this proxy instead of the one bound to code.',
+      op: {
+        type: 'string',
+        required: true,
+        enum: ['list', 'add', 'update', 'remove', 'assign', 'test', 'extract', 'set', 'clear'],
+        description: 'Which proxy operation to run.',
       },
+      id: { type: 'string', description: 'Pool entry id, e.g. "p-1" (add/update/remove/assign/test).' },
+      label: { type: 'string', description: 'Human-friendly name for op:"add"/"update".' },
+      code: { type: 'string', description: 'Account code, for assign/set/clear/test.' },
+      server: { type: 'string', description: 'Proxy URL for add/update/test/set, e.g. http://host:port.' },
+      username: { type: 'string', description: 'Optional proxy username.' },
+      password: { type: 'string', description: 'Optional proxy password (never echoed back).' },
+      timeoutMs: { type: 'integer', description: 'Probe timeout for op:"test" (default 20000).' },
     },
     output: {
       schema: {
@@ -50,150 +57,148 @@ export function register(ctx, deps) {
         additionalProperties: true,
         properties: {
           ok: { type: 'boolean', required: true },
-          op: { type: 'string' },
-          method: { type: 'string' },
-          summary: { type: 'string' },
+          message: { type: 'string', required: true },
           data: { type: 'object', additionalProperties: true },
-          warnings: { type: 'array', items: { type: 'string' } },
-          handoff: { type: 'object', additionalProperties: true },
-          error: { type: 'object', additionalProperties: true },
-          nextSteps: { type: 'array', items: { type: 'string' } },
         },
       },
-      render: (_args, value) => renderEnvelope(
-        value.ok
-          ? `media_proxy ${value.op} — ok`
-          : `media_proxy ${value.op ?? '?'} — failed (${value.error?.code ?? 'ERROR'})`,
-        value,
-        renderLines(value),
-      ),
+      render: (_args, value) => renderEnvelope(value.message, value),
     },
+    timeoutMs: TIMEOUT.PROXY_MS,
     async execute(args) {
-      const op = String(args.op);
-      const code = args.code ? String(args.code).trim() : '';
-      const base = { tool: 'media_proxy', op };
-      const ctxFor = (method) => ({ ...base, method, sessionId: null, accountCode: code || null, handoffs });
-
-      switch (op) {
-        case 'fetch': {
-          const method = 'proxy.fetch';
-          try {
-            const result = await engine.call(method, {
-              ...(code ? { code } : {}),
-              force: args.force === true,
-            }, { timeoutMs: TIMEOUT.PROXY_MS });
-            return success({
-              ...base,
-              method,
-              summary: `proxy ${result?.server ?? '?'} (source=${result?.source ?? '?'}, hasPassword=${result?.hasPassword === true})${result?.expiresAt ? ` expires ${result.expiresAt}` : ''}`,
-              data: scrubCredentials(result),
-              nextSteps: [
-                code
-                  ? `media_proxy {op:"test", code:"${code}"} to confirm the exit IP before publishing.`
-                  : 'Pass code to bind the result to one account: media_proxy {op:"fetch", code:"a-1"}.',
-              ],
-            });
-          } catch (error) {
-            return failure(error, ctxFor(method));
-          }
-        }
-
-        case 'test': {
-          const method = 'proxy.test';
-          const hasProxyArg = args.proxy !== undefined && args.proxy !== null;
-          if (!hasProxyArg && !code) {
-            return argumentFailure({
-              ...base,
-              method,
-              message: 'op:"test" needs "code" (the account whose bound proxy to probe) or "proxy"',
-              nextSteps: ['media_proxy {op:"test", code:"a-1"}', 'media_proxy {op:"test", proxy:{server:"http://1.2.3.4:8000"}}'],
-            });
-          }
-          let params = code ? { code } : {};
-          if (hasProxyArg) {
-            const resolved = resolveProxyArg(args.proxy, { dataDir });
-            if (!resolved.ok || !resolved.proxy) {
-              return argumentFailure({
-                ...base,
-                method,
-                message: resolved.ok ? 'proxy:null cannot be probed — pass a server or omit proxy and use code' : resolved.message,
-                nextSteps: resolved.ok ? ['media_proxy {op:"test", code:"a-1"} to probe the account\'s bound proxy.'] : resolved.nextSteps,
-              });
-            }
-            params = { proxy: resolved.proxy };
-          }
-          try {
-            const result = await engine.call(method, params, { timeoutMs: TIMEOUT.PROXY_MS });
-            return success({
-              ...base,
-              method,
-              summary: result?.ok === true
-                ? `proxy ok — exit IP ${result?.ip ?? '?'} in ${result?.latencyMs ?? '?'} ms`
-                : `proxy test failed — ${result?.detail ?? 'no detail'}`,
-              data: scrubCredentials(result),
-              nextSteps: result?.ok === true
-                ? ['media_session {op:"open", accountCode, proxyPolicy:"sticky"} uses this exit IP for the whole session.']
-                : ['Check the extractor URL/credentials in <dataDir>/proxies.yaml, then media_proxy {op:"rotate", code:"<code>"}.'],
-            });
-          } catch (error) {
-            return failure(error, ctxFor(method));
-          }
-        }
-
-        case 'rotate': {
-          const method = 'proxy.rotate';
-          if (!code) {
-            return argumentFailure({
-              ...base,
-              method,
-              message: 'op:"rotate" needs "code" — rotation is per account (the sticky binding lives in that account)',
-              nextSteps: ['media_account {op:"list"} to pick the code, then media_proxy {op:"rotate", code:"a-1"}.'],
-            });
-          }
-          try {
-            const result = await engine.call(method, { code }, { timeoutMs: TIMEOUT.PROXY_MS });
-            return success({
-              ...base,
-              method,
-              summary: `rotated ${code} → ${result?.server ?? '?'} (hasPassword=${result?.hasPassword === true})`,
-              data: scrubCredentials(result),
-              nextSteps: [
-                'Close and reopen the session to pick up the new IP: media_session {op:"close", sessionId} then {op:"open", accountCode}.',
-              ],
-            });
-          } catch (error) {
-            return failure(error, ctxFor(method));
-          }
-        }
-
-        default:
-          return argumentFailure({
-            ...base,
-            message: `unknown op "${op}"`,
-            nextSteps: [`Supported ops: ${OPS.join(', ')}.`],
+      const pool = () => proxies.listPublic(accounts.proxyUsage());
+      switch (args.op) {
+        case 'list': {
+          const rows = accounts.list().map((account) => {
+            const resolved = resolveAccountProxy(account, proxies);
+            return {
+              code: account.code,
+              media: account.media,
+              proxyId: account.proxyId ?? null,
+              proxy: resolved ? redactProxy(resolved) : null,
+              proxySource: resolved?.source ?? null,
+              sessionOpen: Boolean(manager.get(account.code)),
+            };
           });
+          return sanitize({
+            ok: true,
+            message: `${proxies.list().length} proxy(ies), ${rows.filter((row) => row.proxy).length} account(s) proxied`,
+            data: { proxies: pool(), accounts: rows },
+          });
+        }
+        case 'add': {
+          if (!args.server) throw new EgoError('INVALID_PROXY', 'server is required for op:"add"');
+          parseProxy({ server: args.server, username: args.username, password: args.password });
+          const entry = proxies.add({ label: args.label, server: args.server, username: args.username, password: args.password });
+          return sanitize({
+            ok: true,
+            message: `proxy ${entry.id} added`,
+            data: { proxy: publicProxy(entry, []), proxies: pool() },
+            nextSteps: [`Assign it: egolite_proxy {op:"assign", code:"<code>", id:"${entry.id}"}.`],
+          });
+        }
+        case 'update': {
+          const entry = proxies.update(String(args.id ?? ''), {
+            ...(args.label !== undefined ? { label: args.label } : {}),
+            ...(args.server !== undefined ? { server: args.server } : {}),
+            ...(args.username !== undefined ? { username: args.username } : {}),
+            ...(args.password !== undefined ? { password: args.password } : {}),
+          });
+          const affected = usageOf(entry.id);
+          for (const code of affected) await manager.close(code).catch(() => {});
+          return sanitize({
+            ok: true,
+            message: `proxy ${entry.id} updated${affected.length ? `; closed ${affected.join(', ')} so the change applies` : ''}`,
+            data: { proxy: publicProxy(entry, affected), proxies: pool() },
+          });
+        }
+        case 'remove': {
+          const id = String(args.id ?? '');
+          const entry = proxies.get(id);
+          if (!entry) throw new EgoError('PROXY_NOT_FOUND', `no proxy with id "${id}"`);
+          const affected = accounts.clearProxyId(id);
+          for (const code of affected) await manager.close(code).catch(() => {});
+          proxies.remove(id);
+          return sanitize({
+            ok: true,
+            message: `proxy ${id} removed${affected.length ? `; now direct: ${affected.join(', ')}` : ''}`,
+            data: { removed: true, affected, proxies: pool() },
+          });
+        }
+        case 'assign': {
+          const account = requireAccount(accounts, args.code);
+          const id = args.id === undefined || args.id === null || args.id === '' ? null : String(args.id);
+          if (id !== null && !proxies.get(id)) throw new EgoError('PROXY_NOT_FOUND', `no proxy with id "${id}"`);
+          accounts.setProxyId(account.code, id);
+          await manager.close(account.code).catch(() => {});
+          return sanitize({
+            ok: true,
+            message: id === null ? `${account.code} now goes direct` : `${account.code} now uses proxy ${id}`,
+            data: { account: publicAccount(accounts.get(account.code)), proxies: pool() },
+          });
+        }
+        case 'test': {
+          let entry = null;
+          let proxy = null;
+          let source = '';
+          if (args.id) {
+            entry = proxies.get(String(args.id));
+            if (!entry) throw new EgoError('PROXY_NOT_FOUND', `no proxy with id "${args.id}"`);
+            proxy = entry;
+            source = `pool ${entry.id}`;
+          } else if (args.server) {
+            proxy = { server: args.server, username: args.username, password: args.password };
+            source = 'argument';
+          } else {
+            const account = requireAccount(accounts, args.code);
+            proxy = resolveAccountProxy(account, proxies);
+            source = `account ${account.code}`;
+            if (!proxy) throw new EgoError('NO_PROXY', `account "${account.code}" has no proxy`);
+          }
+          const result = await testProxy(proxy, { timeoutMs: args.timeoutMs ?? 20000 });
+          if (entry) proxies.markTest(entry.id, { ip: result.ip, latencyMs: result.latencyMs });
+          return sanitize({
+            ok: true,
+            message: `proxy works — exit IP ${result.ip} (${result.latencyMs}ms)`,
+            data: { ...result, testedFrom: source, proxy: redactProxy(proxy), proxies: pool() },
+          });
+        }
+        case 'extract': {
+          const result = await extractProxies({ configStore, proxies, log, sources: deps.sources }, { count: 1 });
+          return sanitize({
+            ok: true,
+            message: `extracted ${result.added.length} proxy(ies)${result.whitelist ? `; whitelisted ${result.whitelist.ip}` : ''}`,
+            data: { ...result, proxies: pool() },
+            nextSteps: result.added.length
+              ? [`Assign one: egolite_proxy {op:"assign", code:"<code>", id:"${result.added[0].id}"}.`]
+              : ['Provider returned IPs already in the pool; try again later or increase the count.'],
+          });
+        }
+        case 'set': {
+          const account = requireAccount(accounts, args.code);
+          if (!args.server) throw new EgoError('INVALID_PROXY', 'server is required for op:"set"');
+          const entry = proxies.add({ label: args.label || `账号 ${account.code}`, server: args.server, username: args.username, password: args.password });
+          accounts.setProxyId(account.code, entry.id);
+          await manager.close(account.code).catch(() => {});
+          return sanitize({
+            ok: true,
+            message: `proxy ${entry.id} added and assigned to ${account.code}`,
+            data: { proxy: publicProxy(entry, [account.code]), account: publicAccount(accounts.get(account.code)), proxies: pool() },
+          });
+        }
+        case 'clear': {
+          const account = requireAccount(accounts, args.code);
+          accounts.setProxyId(account.code, null);
+          await manager.close(account.code).catch(() => {});
+          return sanitize({
+            ok: true,
+            message: `${account.code} now goes direct`,
+            data: { account: publicAccount(accounts.get(account.code)), proxies: pool() },
+          });
+        }
+        default:
+          throw new EgoError('INVALID_OP', `unknown proxy op "${args.op}"`);
       }
     },
-    presentCall: (args) => ({ card: 'generic', title: `media_proxy ${args?.op ?? ''}`.trim(), kind: 'other' }),
+    presentCall: (args) => ({ card: 'generic', title: `egolite proxy ${args.op}`, kind: 'other' }),
   }));
-}
-
-/**
- * @param {any} value
- * @returns {string[]}
- */
-function renderLines(value) {
-  if (!value?.ok || !value.data) return [];
-  const data = value.data;
-  switch (value.op) {
-    case 'fetch':
-    case 'rotate':
-      return [`  server=${data.server ?? '-'} username=${data.username ?? '-'} hasPassword=${data.hasPassword === true}`
-        + ` source=${data.source ?? '-'} expiresAt=${data.expiresAt ?? '-'}`];
-    case 'test':
-      return [`  ok=${data.ok === true} ip=${data.ip ?? '-'} latencyMs=${data.latencyMs ?? '-'} bound=${data.bound ?? '-'}`,
-        `  detail=${data.detail ?? ''}`];
-    default:
-      return [];
-  }
 }

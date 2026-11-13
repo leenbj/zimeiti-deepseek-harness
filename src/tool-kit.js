@@ -2,14 +2,13 @@
  * tool-kit.js — the two first-party helpers this plugin would normally import, reimplemented so the
  * package stays dependency-free.
  *
- * Why: the plugin is installed into a profile as a pnpm `link:` dependency, and pnpm does not install a
- * linked package's own dependencies. A bare `import ... from '@deepseek-ai/dsh-tools'` inside the plugin
- * therefore fails with ERR_MODULE_NOT_FOUND and the whole entry fails to activate.
+ * Why: this plugin is installed into a profile as a linked/packed package; a bare
+ * `import ... from '@deepseek-ai/dsh-tools'` inside the bundle would not resolve from the profile and
+ * the whole entry would fail to activate. The contract below mirrors the host's `defineTool`: a
+ * registry-ready definition is `{ name, description, parameters, output: { schema, render }, execute }`
+ * where both schemas are plain JSON Schema limited to the host's supported keyword subset.
  *
- * The contract below is frozen against the host's own `defineTool` (read from the shipped bundle):
- * a registry-ready definition is `{ name, description, parameters, output: { schema, render },
- * execute(args, exec), ...optional presenters, timeoutMs?, isConcurrencySafe? }` where `parameters` and
- * `output.schema` are plain JSON Schema limited to the host's supported keyword subset.
+ * @module ego-publish/tool-kit
  */
 
 /** Keywords the host's schema assertion accepts. Anything else must not be emitted. */
@@ -155,7 +154,7 @@ export function validateArgs(schema, args, prefix = '') {
  * @param {{ schema: Record<string, any>, render: (args: any, value: any) => Array<{type:'text',text:string}> }} options.output
  * @param {(args: any, exec: any) => Promise<unknown>} options.execute
  * @param {(args: any) => object} [options.presentCall]
- * @param {(args: any) => boolean} [options.isConcurrencySafe]
+ * @param {boolean} [options.isConcurrencySafe]
  * @param {number} [options.timeoutMs]
  * @returns {object} a definition accepted by `ctx.tools.register`.
  */
@@ -175,7 +174,6 @@ export function defineTool(options) {
     ...(required.length ? { required } : {}),
   };
 
-  // The output schema uses the same authoring sugar, so it must be normalized the same way.
   const outputSchema = normalizeSchema(options.output.schema ?? {});
 
   assertSupportedSchema(parameters, `defineTool(${options.name}).parameters`);
@@ -217,40 +215,8 @@ export function defineTool(options) {
  * Render a value for the model as one text block: a headline plus the structured payload.
  * @param {string} headline
  * @param {unknown} value
- * @returns {Array<{ type: 'text', text: string }>}
+ * @returns {Array<{type:'text',text:string}>}
  */
 export function renderValue(headline, value) {
   return [{ type: 'text', text: `${headline}\n\n\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\`` }];
-}
-
-/**
- * True when `value` survives a JSON round-trip unchanged.
- *
- * The host rejects a tool result that JSON would rewrite ("value is not lossless JSON"), and the two
- * ways that happens in practice are an `undefined` object value (JSON drops the key) and a hole in an
- * array (JSON turns it into `null`). Both are invisible to a schema check and easy to miss by eye, so
- * the test harness asserts this explicitly.
- *
- * @param {unknown} value
- * @returns {boolean}
- */
-export function isLosslessJson(value) {
-  if (value === undefined) return false;
-  if (value === null) return true;
-  const kind = typeof value;
-  if (kind === 'function' || kind === 'symbol' || kind === 'bigint') return false;
-  if (kind === 'number') return Number.isFinite(value);
-  if (kind !== 'object') return true;
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      if (!(index in value)) return false; // a hole, which JSON fills with null
-      if (!isLosslessJson(value[index])) return false;
-    }
-    return true;
-  }
-  for (const item of Object.values(value)) {
-    if (item === undefined) return false;
-    if (!isLosslessJson(item)) return false;
-  }
-  return true;
 }

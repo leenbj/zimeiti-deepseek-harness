@@ -1,0 +1,97 @@
+{
+  "id": "csdn__publish-article",
+  "media": "csdn",
+  "label": "CSDN 发布博客",
+  "loginCheck": {
+    "urlContains": "mp_blog",
+    "text": "写文章"
+  },
+  "params": [
+    { "name": "title", "required": true, "description": "标题，5-100 字" },
+    { "name": "body", "required": true, "description": "正文纯文本，空行分段" },
+    { "name": "tag", "required": false, "default": "域名与商标", "description": "文章标签，回车创建自定义标签" }
+  ],
+  "steps": [
+    {
+      "action": "goto",
+      "url": "https://mp.csdn.net/mp_blog/creation/editor",
+      "waitUntil": "domcontentloaded",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "waitFor",
+      "selector": "textarea[placeholder*='文章标题']",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "fill",
+      "selector": "textarea[placeholder*='文章标题']",
+      "value": "{{title}}",
+      "timeoutMs": 20000
+    },
+    {
+      "action": "click",
+      "frame": "iframe.cke_wysiwyg_frame",
+      "selector": "body",
+      "timeoutMs": 20000
+    },
+    {
+      "action": "type",
+      "frame": "iframe.cke_wysiwyg_frame",
+      "selector": "body",
+      "text": "{{body}}",
+      "delayMs": 15,
+      "timeoutMs": 180000
+    },
+    {
+      "action": "eval",
+      "expression": "(() => { const counters = [...document.querySelectorAll('*')].filter((e) => e.offsetParent && /共 \\d+ 字/.test(e.textContent || '') && e.children.length === 0); const n = counters.length ? (counters[0].textContent.match(/共 (\\d+) 字/) || [])[1] : '0'; if (!n || Number(n) === 0) throw new Error('CKEditor 未接收正文（共 0 字）'); return Number(n); })()",
+      "timeoutMs": 20000
+    },
+    {
+      "action": "click",
+      "selector": "button.tag__btn-tag",
+      "optional": true,
+      "timeoutMs": 15000
+    },
+    {
+      "action": "waitFor",
+      "selector": "input[placeholder*='自定义标签']",
+      "optional": true,
+      "timeoutMs": 20000
+    },
+    {
+      "action": "fill",
+      "selector": "input[placeholder*='自定义标签']",
+      "value": "{{tag}}",
+      "optional": true,
+      "timeoutMs": 20000
+    },
+    {
+      "action": "press",
+      "key": "Enter",
+      "optional": true,
+      "timeoutMs": 10000
+    },
+    {
+      "action": "screenshot",
+      "name": "before-submit"
+    },
+    {
+      "action": "click",
+      "text": "发布博客",
+      "submit": true,
+      "timeoutMs": 20000
+    },
+    {
+      "action": "waitFor",
+      "urlContains": "creation/success",
+      "timeoutMs": 60000
+    },
+    {
+      "action": "extract",
+      "name": "publishedUrl",
+      "url": true
+    }
+  ]
+}

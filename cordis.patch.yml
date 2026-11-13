@@ -1,19 +1,31 @@
-# The media-publish bundle patch: one insert adding the plugin row to a profile.
-# The row is addressed as `media-publish`; a profile's own cordis.patch.yml can
-# override its config by that id.
+# The ego-publish bundle patch: one insert adding the plugin row to a profile.
+# A profile's own cordis.patch.yml may override the row's config by id `ego-publish`.
 - insert:
-    - id: media-publish
-      name: '@dsh-plugin/media-publish'
+    - id: ego-publish
+      name: '@dsh-plugin/ego-publish'
       config:
-        # Absolute path to the Python interpreter that has Playwright installed.
-        # null/absent => the bundled DSH runtime python, then PATH.
-        pythonPath: null
-        # Runtime data root (accounts, storage state, recipes, runs).
-        # null/absent => %USERPROFILE%\.dsh\media-publish
+        # Absolute path to the installed ego lite browser executable.
+        # null/absent => auto-detect the standard Windows install location.
+        egoPath: null
+        # Runtime data root (accounts, isolated browser profiles, flows, runs).
+        # null/absent => %USERPROFILE%\.dsh\ego-publish. Patch/env only: it decides
+        # where the rest of the configuration lives.
         dataDir: null
-        # Browsers are headed by default: 头条号 silently blocks headless publishes.
-        headless: false
         # Refuse a real publish unless the caller explicitly passes dryRun:false.
         requireExplicitPublish: true
-        # Per-call ceiling for engine requests; long replays may need more.
-        requestTimeoutMs: 120000
+        # Close an account browser after this many idle minutes (0 disables the sweeper).
+        idleCloseMinutes: 30
+        # How long a login hand-off waits for the human.
+        loginTimeoutSec: 300
+        # Per-action ceiling inside a page.
+        actionTimeoutMs: 15000
+        # Navigation ceiling.
+        navigationTimeoutMs: 60000
+        # Refresh Sohu 积分 (points) for signed-in accounts every N minutes (0 disables).
+        pointsRefreshMinutes: 0
+        # After a real publish, wait this many minutes before checking the link and sampling points.
+        linkCheckDelayMinutes: 60
+        # Shenlong HTTP extraction URL (contains key & sign). null disables proxy extraction.
+        proxyApiUrl: null
+        # Add this machine's public IP to the Shenlong whitelist before extracting.
+        proxyApiWhitelist: true

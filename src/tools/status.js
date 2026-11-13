@@ -1,41 +1,55 @@
 /**
- * status.js — `media_status`: the agent's first stop.
+ * status.js — `egolite_status`: the agent's first stop.
  *
- * Self-check of both halves: the Python/Playwright interpreter, the runtime data root, the installed
- * account registry, the recipe catalogue and (with `probe:true`) a live `engine.status` round trip.
+ * Reports the ego lite executable in use, the data root, the configuration, the account registry
+ * (including which accounts have a browser profile and a proxy), the open browser sessions, the flows
+ * and the actionable next step — without starting a browser.
  *
- * @module media-publish/tools/status
+ * @module ego-publish/tools/status
  */
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 
 import { defineTool } from '../tool-kit.js';
-import {
-  TIMEOUT, createHandoffLog, engineSummary, readRecipeCatalog, renderEnvelope,
-} from './common.js';
+import { publicAccount } from '../accounts.js';
+import { readProfileVersion } from '../ego.js';
+import { resolveAccountProxy } from '../proxies.js';
+import { flowSummary, loadFlows } from '../flows.js';
+import { renderEnvelope, sanitize } from './common.js';
 
 /**
- * @param {any} ctx - registrant context carrying the tool registry.
- * @param {{ engine: any, settings: Record<string, any>, dataDir: string, python: Record<string, any>,
- *           pluginRoot: string, pluginVersion: string, handoffs?: any }} deps
+ * @param {any} ctx
+ * @param {{ ego: any, accounts: any, manager: any, settings: Record<string, any>, dataDir: string,
+ *           configStore: any, pluginRoot: string, pluginVersion: string, pluginName: string }} deps
  */
 export function register(ctx, deps) {
-  const { engine, settings, dataDir, python, pluginRoot, pluginVersion } = deps;
-  const handoffs = deps.handoffs ?? createHandoffLog();
-  const pluginRootDir = pluginRoot;
+  const { ego, accounts, proxies, manager, settings, dataDir, configStore, pluginRoot, pluginVersion, pluginName } = deps;
+
+  /** Public account row with the pool-resolved proxy attached. */
+  function accountView(account) {
+    const base = publicAccount(account);
+    if (!base) return null;
+    const resolved = resolveAccountProxy(account, proxies);
+    return {
+      ...base,
+      proxy: resolved
+        ? { server: resolved.server, hasAuth: Boolean(resolved.username || resolved.password), username: resolved.username ?? null }
+        : null,
+      proxyId: account.proxyId ?? null,
+      proxySource: resolved?.source ?? null,
+    };
+  }
 
   ctx.tools.register(defineTool({
-    name: 'media_status',
+    name: 'egolite_status',
     description:
-      'Report media-publish status and self-check both halves: the Python/Playwright interpreter in use, the '
-      + 'runtime data root, the plugin/engine versions, the registered publishing accounts (and whether each has a '
-      + 'saved login state), the recipe catalogue, any session waiting on a human, and the engine log tail when it '
-      + 'fails to start. Call this first before any other media_* tool, and with probe:true whenever an engine call '
-      + 'failed with ENGINE_SPAWN_FAILED / ENGINE_EXITED / ENGINE_TIMEOUT.',
+      'Report ego-publish status before any other egolite_* call: which ego lite executable will be launched, the '
+      + 'runtime data root, the effective configuration and its sources, every registered publishing account (with '
+      + 'whether it has an isolated browser profile and a proxy), the live account browser sessions, and the publish '
+      + 'flows available. This tool never launches a browser.',
     parameters: {
       probe: {
         type: 'boolean',
-        description: 'Also start the Python browser engine and ask it to self-report (slower, about a second).',
+        description: 'Also report the engine-free health details of each account profile directory (slower only on many accounts).',
       },
     },
     output: {
@@ -43,116 +57,68 @@ export function register(ctx, deps) {
         type: 'object',
         additionalProperties: true,
         properties: {
-          pluginVersion: { type: 'string', required: true },
-          pluginRoot: { type: 'string', required: true },
-          dataDir: { type: 'string', required: true },
+          ok: { type: 'boolean', required: true },
+          plugin: { type: 'object', additionalProperties: true, required: true },
           config: { type: 'object', additionalProperties: true, required: true },
-          python: {
-            type: 'object',
-            additionalProperties: true,
-            required: true,
-            properties: {
-              path: { type: 'string', required: true },
-              source: { type: 'string', required: true },
-              exists: { type: 'boolean', required: true },
-              probe: { type: 'string', required: true },
-            },
-          },
-          engine: {
-            type: 'object',
-            additionalProperties: true,
-            required: true,
-            properties: {
-              module: { type: 'string', required: true },
-              entryPresent: { type: 'boolean', required: true },
-              report: { type: 'object', additionalProperties: true },
-              error: { type: 'string' },
-            },
-          },
-          recipes: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
-          accounts: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          sessions: { type: 'array', items: { type: 'string' } },
-          handoffs: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          dataDir: { type: 'string', required: true },
+          accounts: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
+          sessions: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
+          flows: { type: 'array', required: true, items: { type: 'object', additionalProperties: true } },
           nextSteps: { type: 'array', required: true, items: { type: 'string' } },
         },
       },
       render: (_args, value) => renderEnvelope(
-        value.engine.error
-          ? `media-publish: engine not ready — ${value.engine.error}`
-          : `media-publish ${value.pluginVersion} — data root ${value.dataDir} — python ${value.python.source}`,
+        `ego-publish ${value.plugin.version} — ${value.plugin.ego.exists ? 'ego lite found' : 'ego lite NOT found'} — data ${value.dataDir}`,
         value,
-        [
-          `python: ${value.python.path} (exists=${value.python.exists}) — ${String(value.python.probe).slice(0, 200)}`,
-          `engine/sessiond.py: ${value.engine.entryPresent ? 'present' : 'MISSING'}`
-            + (value.engine.report ? ` — engine ${value.engine.report.version ?? '?'} ready` : ''),
-          `recipes: ${value.recipes.length} — ${value.recipes.map((r) => `${r.id}(${r.stepCount} steps)`).join(', ') || 'none'}`,
-        ],
       ),
     },
     async execute(args) {
-      /** @type {Record<string, any>} */
-      const result = {
-        pluginVersion,
-        pluginRoot: pluginRootDir,
-        dataDir,
-        config: settings,
-        python: { path: python.path, source: python.source, exists: python.exists, probe: python.probe },
-        engine: {
-          module: 'engine.sessiond',
-          entryPresent: existsSync(join(pluginRootDir, 'engine', 'sessiond.py')),
-        },
-        recipes: readRecipeCatalog({ dataDir, pluginRoot: pluginRootDir }),
-        accounts: [],
-        sessions: [],
-        handoffs: handoffs.list(),
-        nextSteps: [],
-      };
+      const flows = loadFlows({ pluginRoot, dataDir }).map(flowSummary);
+      const accountList = accounts.list().map(accountView);
+      const proxyList = proxies.listPublic(accounts.proxyUsage());
+      const sessions = manager.list();
+      const nextSteps = [];
 
-      if (!result.python.exists) {
-        result.nextSteps.push(
-          'No usable Python+Playwright interpreter: set config.pythonPath (or MEDIA_PYTHON) to one that can '
-          + '`import playwright`.',
-        );
+      if (!ego.exists) {
+        nextSteps.push(`No ego lite executable found (looked via ${ego.source}: ${ego.path}). Set config.egoPath to ego.exe or install ego lite.`);
       }
-      if (!result.engine.entryPresent) {
-        result.engine.error = 'engine/sessiond.py is missing from the package';
-        result.nextSteps.push('Reinstall the plugin: the engine half of the package was not found.');
-      } else if (args?.probe) {
-        try {
-          const report = await engine.call('engine.status', {}, { timeoutMs: TIMEOUT.STATUS_MS });
-          result.engine.report = engineSummary(report);
-          result.sessions = report?.sessionIds ?? [];
-          const accounts = await engine.call('account.list', {}, { timeoutMs: TIMEOUT.STATUS_MS });
-          result.accounts = accounts?.accounts ?? [];
-          const signedIn = result.accounts.filter((a) => a.hasState).map((a) => a.code);
-          const unbound = result.accounts.filter((a) => !a.proxy?.bound).map((a) => a.code);
-          if (!result.accounts.length) {
-            result.nextSteps.push('No accounts yet: media_account {op:"upsert", code:"a-1", media:"sohu", account:"<login name>"}.');
-          } else if (!signedIn.length) {
-            result.nextSteps.push('No account has a saved login state: media_account {op:"login", code:"<code>"} (a browser window opens for the human; it waits up to 10 minutes).');
-          } else {
-            result.nextSteps.push(`Signed in: ${signedIn.join(', ')}. Continue with media_session {op:"open", accountCode:"<code>"}.`);
-          }
-          if (unbound.length) {
-            result.nextSteps.push(`Accounts with no bound proxy (they will go direct — do not ignore this in multi-account use): ${unbound.join(', ')}.`);
-          }
-          if (report?.recipes !== undefined && report.recipes !== result.recipes.length) {
-            result.nextSteps.push(`Engine sees ${report.recipes} recipes, this half lists ${result.recipes.length}: a recipe file may be unreadable.`);
-          }
-        } catch (error) {
-          result.engine.error = `${error?.code ?? 'ERROR'}: ${error?.message ?? error}`;
-          result.nextSteps.push('Fix the reported engine error, then call media_status again with probe:true.');
-        }
+      if (!accountList.length) {
+        nextSteps.push('No accounts yet: egolite_account {op:"upsert", code:"a-1", media:"sohu", account:"<login name>"}.');
       } else {
-        result.nextSteps.push('Call media_status with probe:true to start the engine and verify Playwright end to end.');
-      }
-      if (result.handoffs.length) {
-        for (const handoff of result.handoffs) {
-          result.nextSteps.push(`Session ${handoff.sessionId} is waiting on a human (reason "${handoff.reason ?? 'unknown'}"): complete it in the browser window, then media_session {op:"resume", sessionId:"${handoff.sessionId}"}.`);
+        const withoutProfile = accountList.filter((account) => !account.hasProfile).map((account) => account.code);
+        const withoutProxy = accountList.filter((account) => !account.proxy).map((account) => account.code);
+        if (withoutProfile.length) {
+          nextSteps.push(`Accounts without a browser profile yet (created on first login): ${withoutProfile.join(', ')}.`);
         }
+        if (withoutProxy.length) {
+          nextSteps.push(`Accounts with no proxy (they exit from this machine's IP): ${withoutProxy.join(', ')}. Add a proxy with egolite_proxy {op:"add", server:"http://host:port"} then assign it with {op:"assign", code:"<code>", id:"p-1"}.`);
+        }
+        nextSteps.push('Sign an account in with egolite_account {op:"login", code:"<code>"} (opens its own ego window; the human scans the QR code).');
       }
-      return result;
+      if (flows.every((flow) => flow.error)) nextSteps.push('No readable publish flow: check <dataDir>/flows/*.json.');
+
+      return sanitize({
+        ok: true,
+        plugin: {
+          name: pluginName,
+          version: pluginVersion,
+          root: pluginRoot,
+          ego,
+          configFile: configStore.filePath,
+          configFileExists: existsSync(configStore.filePath),
+        },
+        config: { values: settings, sources: configStore.sources() },
+        dataDir,
+        accounts: accountList.map((account) => ({
+          ...account,
+          ...(args?.probe ? { profileVersion: readProfileVersion(account.profileDir) } : {}),
+        })),
+        proxies: proxyList,
+        sessions,
+        flows,
+        nextSteps,
+      });
     },
-    presentCall: () => ({ card: 'generic', title: 'media-publish status', kind: 'other' }),
+    presentCall: () => ({ card: 'generic', title: 'ego-publish status', kind: 'other' }),
   }));
 }

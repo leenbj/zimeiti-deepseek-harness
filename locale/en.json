@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ego Publish (ego-publish)",
+    "description": "Self-media publishing on top of ego lite: one isolated browser profile per account (own cookies and login state), an optional per-account network proxy, and replayable publish flows or custom automation scripts."
+  }
+}
